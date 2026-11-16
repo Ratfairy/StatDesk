@@ -1,3 +1,4 @@
+
 """Prepare equal-size rational subgroup rows from worksheet snapshots."""
 
 from math import isfinite
@@ -14,7 +15,8 @@ def prepare_subgroups(
     selected_indexes,
     *,
     min_columns=2,
-    max_columns=8
+    max_columns=8,
+    min_subgroups=2,
 ):
     """
     One worksheet row = one rational subgroup.
@@ -23,6 +25,9 @@ def prepare_subgroups(
     Xbar-S: set min_columns=9, max_columns=25.
 
     No missing values or silently skipped rows.
+
+    min_subgroups defaults to 2 for Phase I analysis.
+    Phase II monitoring can explicitly pass min_subgroups=1.
     """
 
     # =====================================
@@ -37,6 +42,11 @@ def prepare_subgroups(
     ):
         raise SubgroupDataError(
             "Batas ukuran subgrup tidak valid."
+        )
+
+    if type(min_subgroups) is not int or min_subgroups < 1:
+        raise SubgroupDataError(
+            "Minimum jumlah subgrup harus bilangan bulat positif."
         )
 
     try:
@@ -90,9 +100,13 @@ def prepare_subgroups(
                 f"({columns[idx].name}) harus Numeric."
             )
 
-    if len(rows) < 2:
+    if len(rows) < min_subgroups:
+        if min_subgroups == 2:
+            raise SubgroupDataError(
+                "Minimal diperlukan dua subgrup lengkap."
+            )
         raise SubgroupDataError(
-            "Minimal diperlukan dua subgrup lengkap."
+            f"Minimal diperlukan {min_subgroups} subgrup lengkap."
         )
 
     # =====================================

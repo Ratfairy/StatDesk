@@ -2,9 +2,13 @@
 """StatDesk — Shewhart special-cause Rules 1–4.
 
 Statistical rule profiles:
-- standard_6_14: existing StatDesk behavior
-- minitab18_observed: experimental 7/15 behavior observed
-  during comparison with Minitab 18
+- standard_6_14: 6-point trend and 14-point alternating pattern.
+- minitab18_observed: experimental 7-point trend and 15-point
+  alternating pattern, matching selected observed Minitab cases.
+
+The identifiers remain unchanged for compatibility with existing GUI
+and analysis calls. The profile name describes rule behavior, not a
+claim that every version of Minitab implements the same convention.
 
 This module never calculates or modifies control limits.
 """
@@ -18,9 +22,9 @@ RULE_PROFILE_STANDARD = "standard_6_14"
 RULE_PROFILE_MINITAB18_OBSERVED = "minitab18_observed"
 
 RULE_PROFILE_LABELS = {
-    RULE_PROFILE_STANDARD: "StatDesk 6/14",
+    RULE_PROFILE_STANDARD: "6/14-point pattern rules (Nelson-style)",
     RULE_PROFILE_MINITAB18_OBSERVED: (
-        "Minitab 18 observed 7/15 (experimental)"
+        "7/15-point pattern rules (Minitab-observed, experimental)"
     ),
 }
 
@@ -306,14 +310,14 @@ def format_spc_rules_report(result: RulesResult) -> str:
         )
 
     lines.append(
-        "Not a substitute for approved control limits "
-        "or QA investigation."
+        "SPC pattern signals describe the charted process; "
+        "they are not product specification limits."
     )
 
     if result.rule_profile == RULE_PROFILE_MINITAB18_OBSERVED:
         lines.append(
-            "Experimental profile based on observed "
-            "Minitab 18 behavior; not fully validated."
+            "Experimental 7/15 profile matched selected Minitab "
+            "tests; equivalence across all datasets is unverified."
         )
 
     return "\n".join(lines)

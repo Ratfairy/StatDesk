@@ -1,13 +1,9 @@
 
-"""StatDesk R3.3 — Xbar-R Phase II control chart visualization.
+"""StatDesk R3.7 — Xbar-R Phase II chart renderer.
 
-Draw a two-panel Matplotlib figure from Phase2XbarRResult:
-    - Xbar: new subgroup means versus fixed historical limits.
-    - R: new subgroup ranges versus fixed historical limits.
-    - SPC Tests 1–4: group findings by plotted subgroup.
-
-This module never estimates parameters, recalculates control limits,
-or evaluates SPC rules. Only the supplied engine result is plotted.
+Only visualizes the Phase2XbarRResult calculated by spc_phase2.py.
+Historical control limits and SPC rule findings are never recalculated.
+The header, charts, and footer have separate fixed layout regions.
 """
 
 from math import isfinite
@@ -25,12 +21,8 @@ from statdesk.statistics.spc_rules import RulesResult
 
 
 class XbarRPhase2ChartError(ValueError):
-    """Invalid or inconsistent Phase II data for plotting."""
+    """Invalid Xbar-R Phase II result passed to the renderer."""
 
-
-# ======================================================
-# 1. CHART STYLE
-# ======================================================
 
 DATA_COLOR = "#2563eb"
 LIMIT_COLOR = "#dc2626"
@@ -39,36 +31,16 @@ TEST1_COLOR = "#dc2626"
 OTHER_TEST_COLOR = "#9333ea"
 TEXT_COLOR = "#334155"
 
-# All signal markers remain visible.
-# Text annotations are reduced on densely
-# signalled charts to avoid excessive overlap.
-
 MAX_SIGNAL_ANNOTATIONS = 40
 
 
-# ======================================================
-# 2. NUMERICAL VALIDATION
-# ======================================================
-
 def _numeric(value, label):
-    """Validate a finite numeric value."""
-
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, Real)
-    ):
-        raise XbarRPhase2ChartError(
-            f"{label} harus angka Numeric."
-        )
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise XbarRPhase2ChartError(f"{label} harus angka Numeric.")
 
     try:
         number = float(value)
-
-    except (
-        TypeError,
-        ValueError,
-        OverflowError,
-    ) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise XbarRPhase2ChartError(
             f"{label} tidak dapat dikonversi."
         ) from exc
@@ -81,28 +53,17 @@ def _numeric(value, label):
     return number
 
 
-# ======================================================
-# 3. VALIDATE ENGINE RESULT
-# ======================================================
-
 def _validate_result(result):
-    """Check plotting contracts without recomputing statistics."""
+    """Validate plotting inputs without recomputing any statistics."""
 
-    if not isinstance(
-        result,
-        Phase2XbarRResult,
-    ):
+    if not isinstance(result, Phase2XbarRResult):
         raise XbarRPhase2ChartError(
-            "Diperlukan Phase2XbarRResult dari "
-            "monitor_xbar_r_phase2()."
+            "Diperlukan Phase2XbarRResult dari monitor_xbar_r_phase2()."
         )
 
     reference = result.baseline
 
-    if not isinstance(
-        reference,
-        XbarRHistoricalLimits,
-    ):
+    if not isinstance(reference, XbarRHistoricalLimits):
         raise XbarRPhase2ChartError(
             "Historical limits tidak valid."
         )
@@ -117,47 +78,27 @@ def _validate_result(result):
 
     count = len(result.means)
 
-    if (
-        count < 1
-        or len(result.ranges) != count
-    ):
+    if count < 1 or len(result.ranges) != count:
         raise XbarRPhase2ChartError(
             "Panjang data monitoring tidak konsisten."
         )
 
-    # ======================================
-    # VALIDATE PLOTTED VALUES
-    # ======================================
-
-    for panel_name, values in (
+    for name, values in (
         ("Xbar", result.means),
         ("R", result.ranges),
     ):
-
-        for index, value in enumerate(
-            values,
-            start=1,
-        ):
-
+        for index, value in enumerate(values, start=1):
             number = _numeric(
                 value,
-                f"{panel_name} subgroup {index}",
+                f"{name} subgroup {index}",
             )
 
-            if (
-                panel_name == "R"
-                and number < 0.0
-            ):
+            if name == "R" and number < 0:
                 raise XbarRPhase2ChartError(
-                    f"Range subgroup {index} "
-                    "tidak boleh negatif."
+                    f"Range subgroup {index} tidak boleh negatif."
                 )
 
-    # ======================================
-    # VALIDATE HISTORICAL CONTROL LIMITS
-    # ======================================
-
-    for name, lower, center, upper in (
+    for name, lcl, cl, ucl in (
         (
             "Xbar",
             reference.xbar_lcl,
@@ -171,60 +112,40 @@ def _validate_result(result):
             reference.r_ucl,
         ),
     ):
+        low = _numeric(lcl, f"{name} LCL")
+        mid = _numeric(cl, f"{name} CL")
+        high = _numeric(ucl, f"{name} UCL")
 
-        lcl = _numeric(
-            lower,
-            f"{name} LCL",
-        )
-
-        cl = _numeric(
-            center,
-            f"{name} CL",
-        )
-
-        ucl = _numeric(
-            upper,
-            f"{name} UCL",
-        )
-
-        if not lcl < cl < ucl:
+        if not low < mid < high:
             raise XbarRPhase2ChartError(
                 f"{name} membutuhkan LCL < CL < UCL."
             )
 
-        if name == "R" and lcl < 0:
+        if name == "R" and low < 0:
             raise XbarRPhase2ChartError(
                 "R LCL tidak boleh negatif."
             )
-
-    # ======================================
-    # VALIDATE SPC RULE RESULTS
-    # ======================================
 
     for name, rules in (
         ("Xbar", result.xbar_rules),
         ("R", result.r_rules),
     ):
-
         if (
             not isinstance(rules, RulesResult)
             or rules.n_points != count
         ):
             raise XbarRPhase2ChartError(
-                f"Jumlah SPC points untuk "
-                f"{name} tidak sesuai."
+                f"Jumlah SPC points untuk {name} tidak sesuai."
             )
 
         for finding in rules.findings:
-
             if (
                 type(finding.point) is not int
                 or not 1 <= finding.point <= count
                 or finding.test not in rules.enabled_tests
             ):
                 raise XbarRPhase2ChartError(
-                    f"SPC signal {name} memiliki "
-                    "test/indeks tidak valid."
+                    f"SPC signal {name} memiliki test/indeks tidak valid."
                 )
 
     if (
@@ -234,39 +155,22 @@ def _validate_result(result):
         != result.r_rules.rule_profile
     ):
         raise XbarRPhase2ChartError(
-            "Konfigurasi SPC Tests pada "
-            "Xbar dan R berbeda."
+            "Konfigurasi SPC Tests pada Xbar dan R berbeda."
         )
 
     return reference, count
 
 
-# ======================================================
-# 4. GROUP SPC SIGNALS
-# ======================================================
-
 def _group_signals(rules):
-    """Return subgroup numbers and their detected tests.
-
-    Example:
-        {
-            8: (1, 3),
-            9: (1, 2, 3),
-        }
-
-    The rule engine supplies 1-based indexes.
-    """
+    """Group one or more SPC tests at the same 1-based point."""
 
     signals = {}
 
     for finding in rules.findings:
-
         signals.setdefault(
             finding.point,
             set(),
-        ).add(
-            finding.test
-        )
+        ).add(finding.test)
 
     return {
         point: tuple(sorted(tests))
@@ -274,12 +178,8 @@ def _group_signals(rules):
     }
 
 
-# ======================================================
-# 5. SELECT SIGNAL LABELS
-# ======================================================
-
 def _labelled_points(points):
-    """Reduce crowded annotations without hiding markers."""
+    """Show every marker, but cap text labels on crowded charts."""
 
     if len(points) <= MAX_SIGNAL_ANNOTATIONS:
         return set(points)
@@ -287,19 +187,10 @@ def _labelled_points(points):
     last = len(points) - 1
 
     return {
-        points[
-            round(
-                i * last
-                / (MAX_SIGNAL_ANNOTATIONS - 1)
-            )
-        ]
+        points[round(i * last / (MAX_SIGNAL_ANNOTATIONS - 1))]
         for i in range(MAX_SIGNAL_ANNOTATIONS)
     }
 
-
-# ======================================================
-# 6. DRAW ONE CONTROL CHART PANEL
-# ======================================================
 
 def _draw_panel(
     ax,
@@ -313,11 +204,7 @@ def _draw_panel(
     ucl,
     rules,
 ):
-    """Draw one panel using statistical engine results."""
-
-    # ======================================
-    # SUBGROUP VALUES
-    # ======================================
+    """Draw values, fixed control limits and supplied SPC findings."""
 
     ax.plot(
         x,
@@ -330,43 +217,29 @@ def _draw_panel(
         zorder=3,
     )
 
-    # ======================================
-    # FIXED HISTORICAL CONTROL LIMITS
-    # ======================================
-
-    for level, color, style, text in (
+    for level, color, style, label in (
         (ucl, LIMIT_COLOR, "--", "UCL"),
         (cl, CENTER_COLOR, "-", "CL"),
         (lcl, LIMIT_COLOR, "--", "LCL"),
     ):
-
         ax.axhline(
             y=level,
             color=color,
             linestyle=style,
             linewidth=1.25,
-            label=(
-                f"{text} = "
-                f"{format_spc_number(level)}"
-            ),
+            label=f"{label} = {format_spc_number(level)}",
             zorder=2,
         )
-
-    # ======================================
-    # PANEL APPEARANCE
-    # ======================================
 
     ax.set_title(
         title,
         fontsize=11,
-        pad=11,
+        pad=10,
     )
 
     ax.set_ylabel(ylabel)
-
     ax.set_facecolor("white")
     ax.set_axisbelow(True)
-
     ax.grid(alpha=0.23)
 
     ax.spines["top"].set_visible(False)
@@ -374,44 +247,30 @@ def _draw_panel(
 
     ax.margins(y=0.16)
 
-    # A subgroup range cannot be negative.
-
     if (
         ylabel == "Subgroup range"
         and ax.get_ylim()[0] < 0
     ):
         ax.set_ylim(bottom=0)
 
-    # ======================================
-    # GROUP RULE FINDINGS
-    # ======================================
-
     grouped = _group_signals(rules)
 
-    t1_points = [
-        point
-        for point, tests in grouped.items()
+    test1_points = [
+        p
+        for p, tests in grouped.items()
         if 1 in tests
     ]
 
     other_points = [
-        point
-        for point, tests in grouped.items()
+        p
+        for p, tests in grouped.items()
         if any(test > 1 for test in tests)
     ]
 
-    # ======================================
-    # TEST 1 — RED SIGNAL MARKERS
-    # ======================================
-
-    if t1_points:
-
+    if test1_points:
         ax.scatter(
-            t1_points,
-            [
-                values[point - 1]
-                for point in t1_points
-            ],
+            test1_points,
+            [values[p - 1] for p in test1_points],
             s=70,
             color=TEST1_COLOR,
             edgecolors="white",
@@ -420,18 +279,10 @@ def _draw_panel(
             zorder=6,
         )
 
-    # ======================================
-    # TESTS 2–4 — PURPLE SIGNAL RINGS
-    # ======================================
-
     if other_points:
-
         ax.scatter(
             other_points,
-            [
-                values[point - 1]
-                for point in other_points
-            ],
+            [values[p - 1] for p in other_points],
             s=125,
             facecolors="none",
             edgecolors=OTHER_TEST_COLOR,
@@ -440,63 +291,42 @@ def _draw_panel(
             zorder=7,
         )
 
-    # ======================================
-    # SIGNAL ANNOTATIONS
-    # ======================================
-
-    label_points = _labelled_points(
-        list(grouped)
-    )
+    to_label = _labelled_points(list(grouped))
 
     y_bottom, y_top = ax.get_ylim()
-
     y_span = y_top - y_bottom
-
-    last_index = len(values)
+    n_points = len(values)
 
     for point, tests in grouped.items():
-
-        if point not in label_points:
+        if point not in to_label:
             continue
 
         value = values[point - 1]
-
-        # One label can show multiple tests.
-        # Example: T1/T2/T3
 
         label = "/".join(
             f"T{test}"
             for test in tests
         )
 
-        near_right = (
-            point
-            >= max(1, last_index * 0.82)
+        near_right = point >= max(
+            1,
+            n_points * 0.82,
         )
 
         near_top = (
-            (value - y_bottom) / y_span
-            >= 0.75
+            (value - y_bottom) / y_span >= 0.75
         )
 
         ax.annotate(
             label,
             xy=(point, value),
             xytext=(
-                -8 if near_right else 8,
-                -12 if near_top else 10,
+                -11 if near_right else 9,
+                -14 if near_top else 12,
             ),
             textcoords="offset points",
-            ha=(
-                "right"
-                if near_right
-                else "left"
-            ),
-            va=(
-                "top"
-                if near_top
-                else "bottom"
-            ),
+            ha="right" if near_right else "left",
+            va="top" if near_top else "bottom",
             fontsize=8,
             fontweight="bold",
             color=(
@@ -508,10 +338,6 @@ def _draw_panel(
             zorder=8,
         )
 
-    # ======================================
-    # LEGEND
-    # ======================================
-
     ax.legend(
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
@@ -520,51 +346,21 @@ def _draw_panel(
         frameon=True,
     )
 
-    return (
-        len(grouped),
-        len(label_points),
-    )
+    return len(grouped), len(to_label)
 
-
-# ======================================================
-# 7. CREATE COMPLETE XBAR-R PHASE II FIGURE
-# ======================================================
 
 def create_xbar_r_phase2_figure(
     result: Phase2XbarRResult,
 ) -> Figure:
-    """Create a two-panel Xbar-R Phase II Figure.
+    """Create a Figure for GraphWindow, without showing or saving it.
 
-    Parameters
-    ----------
-    result:
-        Output of monitor_xbar_r_phase2().
-
-    Returns
-    -------
-    matplotlib.figure.Figure:
-        Two panels showing subgroup means/ranges,
-        historical limits, and SPC signals.
-
-    The Figure can be passed directly to GraphWindow.
-    This function does not show or save the figure.
+    All Xbar/R values, historical limits and findings come from result.
+    Fixed figure zones avoid overlaps between header, panels and footer.
     """
 
-    # ======================================
-    # VALIDATE INPUT
-    # ======================================
+    reference, count = _validate_result(result)
 
-    reference, count = _validate_result(
-        result
-    )
-
-    x = list(
-        range(1, count + 1)
-    )
-
-    # ======================================
-    # CREATE MATPLOTLIB FIGURE
-    # ======================================
+    x = list(range(1, count + 1))
 
     figure = Figure(
         figsize=(11.3, 8.0),
@@ -572,64 +368,71 @@ def create_xbar_r_phase2_figure(
         facecolor="white",
     )
 
-    ax_xbar, ax_r = figure.subplots(
-        2,
-        1,
-        sharex=True,
+    # ==========================================
+    # FIXED LAYOUT REGIONS
+    # ==========================================
+    #
+    # Regions use figure-relative coordinates.
+    #
+    # HEADER       : above both charts
+    # XBAR CHART   : upper chart area
+    # R CHART      : lower chart area
+    # FOOTER       : below the x-axis label
+    #
+    # Right margin is reserved for legends.
+    #
+    # Do not call tight_layout() or
+    # constrained_layout() after this setup.
+    # ==========================================
+
+    ax_xbar = figure.add_axes(
+        [0.105, 0.565, 0.64, 0.205]
     )
 
-    # ======================================
-    # XBAR PANEL
-    # ======================================
+    ax_r = figure.add_axes(
+        [0.105, 0.275, 0.64, 0.205],
+        sharex=ax_xbar,
+    )
+
+    # ==========================================
+    # XBAR CHART
+    # ==========================================
 
     xbar_count, xbar_labels = _draw_panel(
         ax_xbar,
         x,
         result.means,
-
-        title=(
-            "Xbar Chart — Monitoring "
-            "Subgroup Means"
-        ),
-
+        title="Xbar Chart — Monitoring Subgroup Means",
         ylabel="Subgroup mean",
-
         lcl=reference.xbar_lcl,
         cl=reference.xbar_cl,
         ucl=reference.xbar_ucl,
-
         rules=result.xbar_rules,
     )
 
-    # ======================================
-    # R PANEL
-    # ======================================
+    # ==========================================
+    # R CHART
+    # ==========================================
 
     r_count, r_labels = _draw_panel(
         ax_r,
         x,
         result.ranges,
-
-        title=(
-            "R Chart — Monitoring "
-            "Subgroup Ranges"
-        ),
-
+        title="R Chart — Monitoring Subgroup Ranges",
         ylabel="Subgroup range",
-
         lcl=reference.r_lcl,
         cl=reference.r_cl,
         ucl=reference.r_ucl,
-
         rules=result.r_rules,
     )
 
-    # ======================================
-    # X-AXIS
-    # ======================================
+    # ==========================================
+    # X AXIS
+    # ==========================================
 
     ax_r.set_xlabel(
-        "Subgroup (time order)"
+        "Subgroup (time order)",
+        labelpad=10,
     )
 
     ax_r.set_xlim(
@@ -637,12 +440,14 @@ def create_xbar_r_phase2_figure(
         count + 0.5,
     )
 
+    ax_xbar.tick_params(
+        axis="x",
+        labelbottom=False,
+    )
+
     if count <= 20:
-
         ax_r.set_xticks(x)
-
     else:
-
         ax_r.xaxis.set_major_locator(
             MaxNLocator(
                 nbins=12,
@@ -650,142 +455,120 @@ def create_xbar_r_phase2_figure(
             )
         )
 
-    # ======================================
+    # ==========================================
     # STATISTICAL METADATA
-    # ======================================
+    # ==========================================
+
+    reference_source = (
+        "Estimated from historical data"
+        if reference.source == "estimated"
+        else "Manually specified historical parameters"
+    )
 
     active_tests = ", ".join(
         str(test)
         for test in result.xbar_rules.enabled_tests
     )
 
-    if reference.source == "estimated":
+    # ==========================================
+    # HEADER
+    # ==========================================
 
-        reference_source = (
-            "Estimated from historical data"
-        )
-
-    else:
-
-        reference_source = (
-            "Manually specified "
-            "historical parameters"
-        )
-
-    # ======================================
-    # FIGURE TITLE
-    # ======================================
-
-    figure.suptitle(
+    figure.text(
+        0.5,
+        0.966,
         "StatDesk | Xbar-R Control Chart — Phase II",
+        ha="center",
+        va="center",
         fontsize=15,
-        y=0.983,
+        color="black",
     )
 
     figure.text(
         0.5,
-        0.912,
+        0.916,
         (
             f"Monitoring subgroups: {count}  |  "
-            f"Observations/subgroup: "
-            f"{reference.subgroup_size}  |  "
+            f"Observations/subgroup: {reference.subgroup_size}  |  "
             "Historical limits: FIXED"
         ),
         ha="center",
+        va="center",
         fontsize=9,
         color=TEXT_COLOR,
     )
 
     figure.text(
         0.5,
-        0.879,
+        0.867,
         reference_source,
         ha="center",
+        va="center",
         fontsize=9,
         color=TEXT_COLOR,
     )
 
-    # ======================================
-    # FOOTER: SPC CONFIGURATION
-    # ======================================
+    # ==========================================
+    # FOOTER — SPC CONFIGURATION
+    # ==========================================
 
     figure.text(
         0.5,
-        0.105,
+        0.145,
         (
             f"SPC Tests: {active_tests}  |  "
-            f"Profile: "
-            f"{result.xbar_rules.rule_profile}"
+            f"Profile: {result.xbar_rules.rule_profile}"
         ),
         ha="center",
+        va="center",
         fontsize=8,
         color=TEXT_COLOR,
     )
 
-    # ======================================
-    # FOOTER: SIGNAL INFORMATION
-    # ======================================
+    # ==========================================
+    # FOOTER — SIGNAL INFORMATION
+    # ==========================================
 
     if (
         xbar_count > xbar_labels
         or r_count > r_labels
     ):
-
         footnote = (
-            "All signal markers are shown; "
-            "some text labels are omitted "
-            "for readability."
+            "All signal markers are shown; some text labels "
+            "are omitted for readability."
         )
-
     else:
-
         footnote = (
-            "Signals marked at their subgroup "
-            "position; multiple tests at one "
-            "point share a label."
+            "Signals marked at their subgroup position; "
+            "multiple tests at one point share a label."
         )
 
     figure.text(
         0.5,
-        0.073,
+        0.099,
         footnote,
         ha="center",
+        va="center",
         fontsize=8,
         color=TEXT_COLOR,
     )
 
-    # ======================================
-    # FOOTER: METHOD INFORMATION
-    # ======================================
+    # ==========================================
+    # FOOTER — METHOD INFORMATION
+    # ==========================================
 
     figure.text(
         0.5,
-        0.044,
+        0.054,
         (
-            "Historical control limits are not "
-            "recalculated from monitoring data; "
-            "control limits are not "
+            "Historical limits are not recalculated from "
+            "monitoring data; control limits are not "
             "specification limits."
         ),
         ha="center",
+        va="center",
         fontsize=8,
         color=TEXT_COLOR,
     )
-
-    # ======================================
-    # LAYOUT SPACING
-    # ======================================
-
-    figure.subplots_adjust(
-        left=0.105,
-        right=0.75,
-        top=0.83,
-        bottom=0.19,
-        hspace=0.48,
-    )
-
-    # ======================================
-    # RETURN FIGURE
-    # ======================================
 
     return figure

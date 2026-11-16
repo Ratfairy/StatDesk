@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from statdesk.statistics.spc_rules import (
     RULE_PROFILE_STANDARD,
     RULE_PROFILE_MINITAB18_OBSERVED,
+    RULE_PROFILE_LABELS,
     get_rule_windows,
 )
 
@@ -41,11 +42,11 @@ class SpcTestsDialog(QDialog):
 
         self.profile_combo = QComboBox()
         self.profile_combo.addItem(
-            "StatDesk — 6-point trend / 14-point alternating",
+            RULE_PROFILE_LABELS[RULE_PROFILE_STANDARD],
             RULE_PROFILE_STANDARD,
         )
         self.profile_combo.addItem(
-            "Minitab 18 observed — 7/15 (experimental)",
+            RULE_PROFILE_LABELS[RULE_PROFILE_MINITAB18_OBSERVED],
             RULE_PROFILE_MINITAB18_OBSERVED,
         )
         layout.addWidget(self.profile_combo)
@@ -84,8 +85,8 @@ class SpcTestsDialog(QDialog):
         warning = QLabel(
             "\nLebih banyak SPC Tests dapat meningkatkan "
             "sensitivitas sekaligus risiko false alarm.\n"
-            "Control limits tetap berasal dari Phase I. "
-            "Hasil perlu investigasi dan review QC/QA."
+            "Control limits tetap berasal dari engine statistik. "
+            "SPC signals bukan batas spesifikasi produk."
         )
         warning.setWordWrap(True)
         layout.addWidget(warning)
@@ -116,14 +117,14 @@ class SpcTestsDialog(QDialog):
 
         if profile == RULE_PROFILE_STANDARD:
             note = (
-                "Default StatDesk: mempertahankan aturan "
-                "6/14 dari versi sebelumnya."
+                "Metode 6/14: Test 3 memakai 6 titik tren, "
+                "Test 4 memakai 14 titik bergantian."
             )
         else:
             note = (
-                "EXPERIMENTAL: mengikuti jumlah titik yang "
-                "diamati pada pengujian Minitab 18. "
-                "Belum menjamin kompatibilitas penuh."
+                "Metode 7/15 (eksperimental): cocok pada "
+                "kasus batas Minitab yang sudah diuji. "
+                "Belum menjamin kesetaraan pada semua data."
             )
 
         self.profile_note.setText(note)
