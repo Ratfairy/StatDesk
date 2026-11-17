@@ -1,62 +1,201 @@
 
-"""StatDesk — I-MR Control Chart Visualization.
+"""StatDesk — I-MR Control Chart Visualization (R3.15).
 
-Responsibilities:
-- Render Individuals (I) Chart.
-- Render Moving Range (MR) Chart.
-- Display UCL, CL and LCL from SpcEngine.
-- Highlight Test 1 special-cause signals.
-- Support optional SPC Rules overlays.
-- Format control limits using shared SPC formatter.
-- Keep chart footer readable.
+Display-only improvements:
+- Move legends outside the plotting areas.
+- Keep Test 1 labels visible near chart edges.
+- Use statistical guidance without QA approval wording.
+- Preserve compatibility with optional SPC Tests 2-4 overlays.
 
-Statistical calculations are performed by SpcEngine.
-
-This module does not recalculate or modify
-statistical control limits.
+All measurements, control limits, and signal indices come from
+SpcEngine. No statistical calculations are performed here.
 """
 
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 
 from statdesk.statistics.spc_engine import ImrResult
-
-from statdesk.statistics.spc_number_format import (
-    format_spc_number,
-)
+from statdesk.statistics.spc_number_format import format_spc_number
 
 
 # ======================================================
-# 1. CREATE I-MR FIGURE
+# 1. VISUAL STYLE
+# ======================================================
+
+DATA_COLOR = "#2563eb"
+LIMIT_COLOR = "#dc2626"
+CENTER_COLOR = "#059669"
+SIGNAL_COLOR = "#dc2626"
+TITLE_COLOR = "#0F172A"
+TEXT_COLOR = "#475569"
+GRID_COLOR = "#CBD5E1"
+
+PRELIMINARY_OBSERVATIONS = 100
+
+
+# ======================================================
+# 2. AXIS APPEARANCE
+# ======================================================
+
+def _style_axis(ax):
+    """Apply consistent presentation without changing data."""
+
+    ax.set_facecolor("white")
+    ax.set_axisbelow(True)
+
+    ax.grid(
+        axis="both",
+        color=GRID_COLOR,
+        linewidth=0.7,
+        alpha=0.40,
+    )
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#64748b")
+    ax.spines["bottom"].set_color("#64748b")
+
+    ax.tick_params(
+        axis="both",
+        labelsize=9,
+        colors="#334155",
+    )
+
+
+def _add_control_limits(ax, lower, center, upper):
+    """Plot original, unrounded control limits from the engine."""
+
+    ax.axhline(
+        y=upper,
+        color=LIMIT_COLOR,
+        linestyle="--",
+        linewidth=1.4,
+        label="UCL = " + format_spc_number(upper),
+        zorder=2,
+    )
+
+    ax.axhline(
+        y=center,
+        color=CENTER_COLOR,
+        linestyle="-",
+        linewidth=1.3,
+        label="CL = " + format_spc_number(center),
+        zorder=2,
+    )
+
+    ax.axhline(
+        y=lower,
+        color=LIMIT_COLOR,
+        linestyle="--",
+        linewidth=1.4,
+        label="LCL = " + format_spc_number(lower),
+        zorder=2,
+    )
+
+
+def _add_external_legend(ax):
+    """Keep the legend in the reserved right-hand figure margin."""
+
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0.0,
+        fontsize=8,
+        frameon=True,
+        facecolor="white",
+        edgecolor=GRID_COLOR,
+        framealpha=0.96,
+        handlelength=2.1,
+    )
+
+
+# ======================================================
+# 3. TEST 1 SIGNAL MARKERS
+# ======================================================
+
+def _add_test1_markers(
+    ax,
+    values,
+    signal_positions,
+    *,
+    first_observation,
+):
+    """Draw engine-detected signals using original observation numbers.
+
+    first_observation = 1 for Individuals, 2 for Moving Range.
+    Annotation offsets point inward near the top and right edges.
+    """
+
+    if not signal_positions:
+        return
+
+    # Markers use original observations, not reindexed series values.
+    plotted = []
+
+    for number in signal_positions:
+        value = values[number - first_observation]
+        plotted.append((number, value))
+
+    for idx, (number, value) in enumerate(plotted):
+        ax.scatter(
+            [number],
+            [value],
+            color=SIGNAL_COLOR,
+            s=75,
+            edgecolors="white",
+            linewidths=1,
+            zorder=6,
+            label="Test 1 signal" if idx == 0 else "_nolegend_",
+        )
+
+    # Give signal numbers breathing room while keeping all original
+    # measurement coordinates and control limits unchanged.
+    ax.margins(y=0.13)
+
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    x_span = max(x_max - x_min, 1.0)
+    y_span = max(y_max - y_min, 1e-12)
+
+    for number, value in plotted:
+        x_fraction = (number - x_min) / x_span
+        y_fraction = (value - y_min) / y_span
+
+        if x_fraction >= 0.80:
+            dx, horizontal = -8, "right"
+        else:
+            dx, horizontal = 8, "left"
+
+        if y_fraction >= 0.78:
+            dy, vertical = -11, "top"
+        else:
+            dy, vertical = 9, "bottom"
+
+        ax.annotate(
+            str(number),
+            xy=(number, value),
+            xytext=(dx, dy),
+            textcoords="offset points",
+            ha=horizontal,
+            va=vertical,
+            fontsize=9,
+            color="#b91c1c",
+            fontweight="bold",
+            annotation_clip=True,
+            zorder=7,
+        )
+
+
+# ======================================================
+# 4. CREATE I-MR FIGURE
 # ======================================================
 
 def create_imr_figure(result: ImrResult) -> Figure:
-    """Create a two-panel Phase I I-MR Control Chart.
+    """Create an I-MR chart with two axes for the existing GUI.
 
-    Parameters
-    ----------
-    result : ImrResult
-        Statistical result from SpcEngine.
-
-    Returns
-    -------
-    Figure
-        Matplotlib figure containing:
-        - Individuals (I) Chart
-        - Moving Range (MR) Chart
-
-    Notes
-    -----
-    All statistical values originate from the
-    calculation engine.
-
-    Shared formatting affects labels only,
-    never the underlying chart coordinates.
+    The first axes is Individuals and the second is Moving Range.
+    This order is required by spc_rules_overlay.py.
     """
-
-    # =====================================
-    # 1. CREATE FIGURE
-    # =====================================
 
     figure = Figure(
         figsize=(11.3, 8.0),
@@ -70,29 +209,27 @@ def create_imr_figure(result: ImrResult) -> Figure:
         sharex=True,
     )
 
-    # =====================================
-    # 2. OBSERVATION INDEXES
-    # =====================================
-
-    # Individuals begin at observation 1.
-    x_i = list(
-        range(1, result.n + 1)
+    # Reserve the right margin for legends and the bottom
+    # portion for method notes. Do not use tight_layout().
+    figure.subplots_adjust(
+        left=0.10,
+        right=0.75,
+        top=0.865,
+        bottom=0.265,
+        hspace=0.46,
     )
 
-    # MR(i) belongs to observations i-1 and i.
-    # Therefore the first MR is observation 2.
-    x_mr = list(
-        range(2, result.n + 1)
-    )
+    # Individuals use observation numbers 1..N.
+    x_i = list(range(1, result.n + 1))
 
-    # =====================================
-    # 3. INDIVIDUALS CHART
-    # =====================================
+    # MR(i) is the difference between observations i-1 and i.
+    # Thus the first MR corresponds to observation number 2.
+    x_mr = list(range(2, result.n + 1))
 
     ax_i.plot(
         x_i,
         result.values,
-        color="#2563eb",
+        color=DATA_COLOR,
         linewidth=1.4,
         marker="o",
         markersize=4.5,
@@ -100,14 +237,10 @@ def create_imr_figure(result: ImrResult) -> Figure:
         zorder=3,
     )
 
-    # =====================================
-    # 4. MOVING RANGE CHART
-    # =====================================
-
     ax_mr.plot(
         x_mr,
         result.moving_ranges,
-        color="#2563eb",
+        color=DATA_COLOR,
         linewidth=1.4,
         marker="o",
         markersize=4.5,
@@ -115,223 +248,45 @@ def create_imr_figure(result: ImrResult) -> Figure:
         zorder=3,
     )
 
-    # =====================================
-    # 5. CONTROL LIMITS
-    # =====================================
-
-    # Use original statistical engine results.
-    # Never round the control-limit coordinates.
-    #
-    # Formatting applies only to legend text.
-
-    chart_limits = (
-        (
-            ax_i,
-            result.i_lcl,
-            result.i_center,
-            result.i_ucl,
-        ),
-        (
-            ax_mr,
-            result.mr_lcl,
-            result.mr_center,
-            result.mr_ucl,
-        ),
+    _add_control_limits(
+        ax_i,
+        result.i_lcl,
+        result.i_center,
+        result.i_ucl,
     )
 
-    for axes, lower, center, upper in chart_limits:
+    _add_control_limits(
+        ax_mr,
+        result.mr_lcl,
+        result.mr_center,
+        result.mr_ucl,
+    )
 
-        # =================================
-        # UPPER CONTROL LIMIT
-        # =================================
+    for ax in (ax_i, ax_mr):
+        _style_axis(ax)
 
-        axes.axhline(
-            y=upper,
-            color="#dc2626",
-            linestyle="--",
-            linewidth=1.4,
-            label=(
-                "UCL = "
-                + format_spc_number(upper)
-            ),
-            zorder=2,
-        )
+    # Set the shared x range before positioning signal labels.
+    ax_mr.set_xlim(0.5, result.n + 0.5)
 
-        # =================================
-        # CENTER LINE
-        # =================================
+    _add_test1_markers(
+        ax_i,
+        result.values,
+        result.i_violations,
+        first_observation=1,
+    )
 
-        axes.axhline(
-            y=center,
-            color="#059669",
-            linestyle="-",
-            linewidth=1.3,
-            label=(
-                "CL = "
-                + format_spc_number(center)
-            ),
-            zorder=2,
-        )
-
-        # =================================
-        # LOWER CONTROL LIMIT
-        # =================================
-
-        axes.axhline(
-            y=lower,
-            color="#dc2626",
-            linestyle="--",
-            linewidth=1.4,
-            label=(
-                "LCL = "
-                + format_spc_number(lower)
-            ),
-            zorder=2,
-        )
-
-        # =================================
-        # CHART APPEARANCE
-        # =================================
-
-        axes.set_facecolor("white")
-        axes.set_axisbelow(True)
-
-        axes.grid(
-            axis="both",
-            color="#CBD5E1",
-            linewidth=0.7,
-            alpha=0.40,
-        )
-
-        axes.spines["top"].set_visible(False)
-        axes.spines["right"].set_visible(False)
-
-        axes.spines["left"].set_color(
-            "#64748b"
-        )
-
-        axes.spines["bottom"].set_color(
-            "#64748b"
-        )
-
-        axes.tick_params(
-            axis="both",
-            labelsize=9,
-            colors="#334155",
-        )
-
-        # Shared number formatter keeps
-        # legend labels readable for
-        # both ordinary and extreme values.
-
-        axes.legend(
-            loc="upper left",
-            fontsize=8,
-            frameon=True,
-            facecolor="white",
-            edgecolor="#CBD5E1",
-            framealpha=0.92,
-        )
-
-    # =====================================
-    # 6. INDIVIDUALS TEST 1 SIGNALS
-    # =====================================
-
-    for index in result.i_violations:
-
-        # Original 1-based observation index.
-        value = result.values[index - 1]
-
-        ax_i.scatter(
-            [index],
-            [value],
-            color="#dc2626",
-            s=75,
-            edgecolors="white",
-            linewidths=1,
-            zorder=6,
-        )
-
-        # Move endpoint labels inward.
-        near_right_edge = (
-            index >= result.n - 1
-        )
-
-        ax_i.annotate(
-            str(index),
-            xy=(index, value),
-            xytext=(
-                (-7, 8)
-                if near_right_edge
-                else (5, 8)
-            ),
-            textcoords="offset points",
-            ha=(
-                "right"
-                if near_right_edge
-                else "left"
-            ),
-            fontsize=9,
-            color="#b91c1c",
-            fontweight="bold",
-            zorder=7,
-        )
-
-    # =====================================
-    # 7. MOVING RANGE TEST 1 SIGNALS
-    # =====================================
-
-    for index in result.mr_violations:
-
-        # MR(i) uses observation number i.
-        # The first MR is stored at index 0
-        # and belongs to observation 2.
-
-        value = result.moving_ranges[index - 2]
-
-        ax_mr.scatter(
-            [index],
-            [value],
-            color="#dc2626",
-            s=75,
-            edgecolors="white",
-            linewidths=1,
-            zorder=6,
-        )
-
-        near_right_edge = (
-            index >= result.n - 1
-        )
-
-        ax_mr.annotate(
-            str(index),
-            xy=(index, value),
-            xytext=(
-                (-7, 8)
-                if near_right_edge
-                else (5, 8)
-            ),
-            textcoords="offset points",
-            ha=(
-                "right"
-                if near_right_edge
-                else "left"
-            ),
-            fontsize=9,
-            color="#b91c1c",
-            fontweight="bold",
-            zorder=7,
-        )
-
-    # =====================================
-    # 8. CHART TITLES
-    # =====================================
+    _add_test1_markers(
+        ax_mr,
+        result.moving_ranges,
+        result.mr_violations,
+        first_observation=2,
+    )
 
     ax_i.set_title(
         f"Individuals (I) Chart — {result.column_name}",
         fontsize=12,
         pad=12,
-        color="#0F172A",
+        color=TITLE_COLOR,
     )
 
     ax_i.set_ylabel(
@@ -344,7 +299,7 @@ def create_imr_figure(result: ImrResult) -> Figure:
         "Moving Range (MR) Chart — span 2",
         fontsize=12,
         pad=12,
-        color="#0F172A",
+        color=TITLE_COLOR,
     )
 
     ax_mr.set_ylabel(
@@ -353,75 +308,40 @@ def create_imr_figure(result: ImrResult) -> Figure:
         labelpad=10,
     )
 
-    # =====================================
-    # 9. X AXIS
-    # =====================================
-
     ax_mr.set_xlabel(
         "Observation (time order)",
         fontsize=10,
         labelpad=10,
     )
 
-    ax_mr.set_xlim(
-        0.5,
-        result.n + 0.5,
-    )
-
     ax_mr.xaxis.set_major_locator(
-        MaxNLocator(
-            integer=True,
-            nbins=12,
-        )
+        MaxNLocator(integer=True, nbins=12)
     )
 
-    # =====================================
-    # 10. MAIN TITLE
-    # =====================================
+    # Legends must be added after plotting the Test 1 markers.
+    _add_external_legend(ax_i)
+    _add_external_legend(ax_mr)
 
     figure.suptitle(
         "StatDesk | I-MR Control Chart — Phase I",
         fontsize=16,
         fontweight="medium",
-        color="#0F172A",
+        color=TITLE_COLOR,
         y=0.965,
     )
 
-    # =====================================
-    # 11. LAYOUT
-    # =====================================
-
-    figure.subplots_adjust(
-        left=0.10,
-        right=0.97,
-        top=0.865,
-        bottom=0.265,
-        hspace=0.46,
-    )
-
-    # =====================================
-    # 12. PRELIMINARY WARNING
-    # =====================================
-
-    if result.n < 100:
-
+    if result.n < PRELIMINARY_OBSERVATIONS:
         warning_text = (
             f"PRELIMINARY — N={result.n} observations. "
-            "Review process stability before "
-            "approving control limits."
+            "Review process stability before using these limits."
         )
-
         warning_color = "#B45309"
-
     else:
-
         warning_text = (
             f"N={result.n} observations. "
-            "Control limits still require "
-            "QC/QA validation."
+            "Interpret control limits alongside process stability."
         )
-
-        warning_color = "#475569"
+        warning_color = TEXT_COLOR
 
     figure.text(
         0.5,
@@ -432,10 +352,6 @@ def create_imr_figure(result: ImrResult) -> Figure:
         fontsize=9,
         color=warning_color,
     )
-
-    # =====================================
-    # 13. METHOD INFORMATION
-    # =====================================
 
     figure.text(
         0.5,
@@ -448,36 +364,23 @@ def create_imr_figure(result: ImrResult) -> Figure:
         ha="center",
         va="center",
         fontsize=8,
-        color="#475569",
+        color=TEXT_COLOR,
     )
 
-    # =====================================
-    # 14. SPC RULES FOOTER
-    # =====================================
-
-    # Preserve the "Test 1 only" phrase.
-    #
-    # spc_rules_overlay.py replaces this
-    # phrase with the selected active tests
-    # when Advanced SPC mode is enabled.
-
+    # The substring "Test 1 only" is intentionally preserved.
+    # spc_rules_overlay.py replaces it in Advanced SPC mode.
     figure.text(
         0.5,
         0.045,
         (
             "Test 1 only"
             "  |  "
-            "Control limits are NOT "
-            "specification limits"
+            "Control limits are NOT specification limits"
         ),
         ha="center",
         va="center",
         fontsize=8,
         color="#64748B",
     )
-
-    # =====================================
-    # 15. RETURN FIGURE
-    # =====================================
 
     return figure

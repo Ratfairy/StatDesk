@@ -1,20 +1,17 @@
 
-"""StatDesk — Phase I I-MR Statistical Engine.
+"""StatDesk — Phase I I-MR Statistical Engine and Session Output.
+
+R3.14 enhances report presentation only. Statistical calculations,
+control limits, and Test 1 detection use the established I-MR engine.
 
 Methods:
 - Time-ordered individual observations
-- Moving Range span 2
-- Within sigma estimated by MRbar / d2
-- Shewhart three-sigma control limits
-- Test 1: points strictly outside control limits
+- Moving ranges of two consecutive observations
+- Within sigma = MRbar / d2, d2 = 1.128
+- Shewhart 3-sigma I limits and D3/D4 moving-range limits
+- Test 1: strictly beyond the control limits
 
-Session Output:
-- Shared SPC number formatter
-- Fixed three decimals for ordinary values
-- Scientific notation for extreme values
-- Full numerical precision during calculations
-
-No GUI or visualization dependencies.
+No GUI, plotting, authentication, or QA approval workflow.
 """
 
 from dataclasses import dataclass
@@ -27,10 +24,11 @@ from statdesk.statistics.spc_number_format import (
 
 
 # ======================================================
-# 1. ENGINE CONFIGURATION
+# 1. CONFIGURATION
 # ======================================================
 
 SPC_ENGINE_VERSION = "0.6.0"
+IMR_REPORT_VERSION = "0.8.0"
 
 D2 = 1.128
 D3 = 0.0
@@ -38,28 +36,22 @@ D4 = 3.267
 
 MIN_N = 3
 RECOMMENDED_N = 100
+MAX_REPORT_ROWS = 30
 
 
 # ======================================================
-# 2. EXCEPTION
+# 2. ERRORS AND RESULT CONTRACT
 # ======================================================
 
 class SpcError(ValueError):
-    """Input or numerical error preventing a valid I-MR result."""
+    """Invalid I-MR input or numerical result."""
 
-
-# ======================================================
-# 3. IMMUTABLE RESULT CONTRACT
-# ======================================================
 
 @dataclass(frozen=True)
 class ImrResult:
-
     column_name: str
-
     values: tuple[float, ...]
     moving_ranges: tuple[float, ...]
-
     n: int
 
     i_center: float
@@ -72,29 +64,27 @@ class ImrResult:
 
     sigma_within: float
 
-    # Observation numbers start at 1.
+    # Individual positions are 1-based.
     i_violations: tuple[int, ...]
 
-    # MR(i) belongs to observations i-1 and i.
+    # MR(i) belongs to the later observation i.
     mr_violations: tuple[int, ...]
 
     warnings: tuple[str, ...]
 
 
 # ======================================================
-# 4. I-MR STATISTICAL ENGINE
+# 3. STATISTICAL ENGINE (UNCHANGED METHOD)
 # ======================================================
 
 class SpcEngine:
 
     @staticmethod
-    def calculate_imr(
-        values,
-        column_name: str
-    ) -> ImrResult:
+    def calculate_imr(values, column_name: str) -> ImrResult:
+        """Calculate Phase I I-MR with moving-range span 2."""
 
         # =====================================
-        # 1. COLUMN VALIDATION
+        # 1. VALIDATE COLUMN
         # =====================================
 
         if (
@@ -114,7 +104,7 @@ class SpcEngine:
             ) from exc
 
         # =====================================
-        # 2. MEASUREMENT VALIDATION
+        # 2. VALIDATE MEASUREMENTS
         # =====================================
 
         numbers = []
@@ -123,7 +113,6 @@ class SpcEngine:
             iterator,
             start=1
         ):
-
             if raw is None:
                 raise SpcError(
                     f"Baris {row_number} kosong. "
@@ -164,7 +153,7 @@ class SpcEngine:
             numbers.append(number)
 
         # =====================================
-        # 3. MINIMUM SAMPLE SIZE
+        # 3. SAMPLE SIZE
         # =====================================
 
         n = len(numbers)
@@ -176,11 +165,10 @@ class SpcEngine:
             )
 
         # =====================================
-        # 4. CALCULATE MOVING RANGES
+        # 4. STATISTICAL CALCULATIONS
         # =====================================
 
         try:
-
             moving_ranges = [
                 abs(current - previous)
                 for previous, current in zip(
@@ -189,41 +177,24 @@ class SpcEngine:
                 )
             ]
 
-            # =================================
-            # 5. MEAN AND MR BAR
-            # =================================
-
+            # Individuals mean
             xbar = fsum(numbers) / n
 
+            # Average moving range
             mrbar = (
                 fsum(moving_ranges)
                 / (n - 1)
             )
 
-            # =================================
-            # 6. WITHIN-SIGMA ESTIMATOR
-            # =================================
-
+            # Within-process sigma
             sigma_within = mrbar / D2
 
-            # =================================
-            # 7. INDIVIDUALS CONTROL LIMITS
-            # =================================
+            # Individuals control limits
+            i_ucl = xbar + 3.0 * sigma_within
+            i_lcl = xbar - 3.0 * sigma_within
 
-            i_ucl = (
-                xbar + 3.0 * sigma_within
-            )
-
-            i_lcl = (
-                xbar - 3.0 * sigma_within
-            )
-
-            # =================================
-            # 8. MOVING RANGE CONTROL LIMITS
-            # =================================
-
+            # Moving Range control limits
             mr_ucl = D4 * mrbar
-
             mr_lcl = D3 * mrbar
 
         except (
@@ -237,7 +208,7 @@ class SpcEngine:
             ) from exc
 
         # =====================================
-        # 9. NUMERICAL VALIDATION
+        # 5. NUMERICAL VALIDATION
         # =====================================
 
         calculated = (
@@ -266,21 +237,17 @@ class SpcEngine:
                 "batas kendali tidak informatif."
             )
 
-        if not (
-            i_lcl < xbar < i_ucl
-        ):
+        if not i_lcl < xbar < i_ucl:
             raise SpcError(
                 "Presisi float tidak cukup "
                 "untuk membedakan batas I Chart."
             )
 
         # =====================================
-        # 10. TEST 1 — INDIVIDUALS
+        # 6. TEST 1 - INDIVIDUALS
         # =====================================
 
-        # Strictly beyond control limits.
-        # Equality does not count as a signal.
-
+        # Equality to limits is NOT a signal.
         i_violations = tuple(
             index
             for index, value in enumerate(
@@ -294,9 +261,10 @@ class SpcEngine:
         )
 
         # =====================================
-        # 11. TEST 1 — MOVING RANGE
+        # 7. TEST 1 - MOVING RANGE
         # =====================================
 
+        # The first MR corresponds to observation 2.
         mr_violations = tuple(
             index
             for index, value in enumerate(
@@ -310,7 +278,7 @@ class SpcEngine:
         )
 
         # =====================================
-        # 12. INDUSTRIAL WARNINGS
+        # 8. STATISTICAL WARNINGS
         # =====================================
 
         warnings = []
@@ -327,8 +295,8 @@ class SpcEngine:
             "Phase I: semua titik, termasuk "
             "titik yang bersinyal, ikut "
             "mengestimasi batas kendali; "
-            "investigasi sebelum menetapkan "
-            "baseline resmi.",
+            "periksa pola sebelum menggunakan "
+            "batas sebagai referensi.",
 
             "Hanya Test 1 (di luar 3-sigma) "
             "yang diperiksa; tidak membuktikan "
@@ -342,17 +310,14 @@ class SpcEngine:
         ))
 
         # =====================================
-        # 13. RETURN IMMUTABLE RESULT
+        # 9. RETURN RESULT
         # =====================================
 
         return ImrResult(
             column_name=column_name.strip(),
 
             values=tuple(numbers),
-            moving_ranges=tuple(
-                moving_ranges
-            ),
-
+            moving_ranges=tuple(moving_ranges),
             n=n,
 
             i_center=xbar,
@@ -373,23 +338,11 @@ class SpcEngine:
 
 
 # ======================================================
-# 5. SHARED NUMBER FORMATTER COMPATIBILITY
+# 4. BACKWARD-COMPATIBLE FORMATTER
 # ======================================================
-
-# Keep this private alias for backward compatibility
-# with any existing internal imports.
-#
-# The implementation is now centralized in:
-# statdesk/statistics/spc_number_format.py
-#
-# No duplicate formatting logic remains here.
 
 _format_spc_number = format_spc_number
 
-
-# ======================================================
-# 6. TEST 1 SIGNAL FORMATTING
-# ======================================================
 
 def _format_test1_signals(signals) -> str:
     """Format original 1-based observation numbers."""
@@ -404,21 +357,159 @@ def _format_test1_signals(signals) -> str:
 
 
 # ======================================================
-# 7. FORMAT I-MR SESSION OUTPUT
+# 5. R3.14 - OBSERVATION TABLE
+# ======================================================
+
+def _format_observation_table(
+    result: ImrResult
+) -> list[str]:
+    """Show individuals, moving ranges, and Test 1 signals.
+
+    The first moving range is undefined.
+    MR(i) belongs to observation i, starting at i=2.
+
+    All values and signals are obtained from the
+    original statistical engine result.
+    """
+
+    f = format_spc_number
+
+    i_signals = set(
+        result.i_violations
+    )
+
+    mr_signals = set(
+        result.mr_violations
+    )
+
+    lines = [
+        "",
+        "OBSERVATION STATISTICS",
+        "-" * 64,
+
+        (
+            f"{'No':>4} | "
+            f"{'Individual':>12} | "
+            f"{'MR(2)':>12} | "
+            f"{'I T1':>6} | "
+            f"{'MR T1':>6}"
+        ),
+
+        "-" * 64,
+    ]
+
+    shown = min(
+        result.n,
+        MAX_REPORT_ROWS,
+    )
+
+    for pos in range(1, shown + 1):
+        individual = f(
+            result.values[pos - 1]
+        )
+
+        # MR is undefined for observation 1.
+        mr_text = (
+            "N/A"
+            if pos == 1
+            else f(
+                result.moving_ranges[pos - 2]
+            )
+        )
+
+        i_tag = (
+            "T1"
+            if pos in i_signals
+            else "-"
+        )
+
+        mr_tag = (
+            "T1"
+            if pos in mr_signals
+            else "-"
+        )
+
+        lines.append(
+            f"{pos:>4} | "
+            f"{individual:>12} | "
+            f"{mr_text:>12} | "
+            f"{i_tag:>6} | "
+            f"{mr_tag:>6}"
+        )
+
+    # =====================================
+    # REPORT ROW LIMIT
+    # =====================================
+
+    if shown < result.n:
+        omitted = (
+            result.n - shown
+        )
+
+        lines.extend([
+            "",
+            f"... {omitted} observations omitted "
+            "from Session Output.",
+
+            "All observations were still used "
+            "in calculations and Test 1 evaluation.",
+        ])
+
+    lines.extend([
+        "",
+
+        "MR(i) = |Individual(i) - Individual(i-1)|, "
+        "for i >= 2.",
+
+        "N/A = moving range is undefined "
+        "at observation 1.",
+
+        "T1 = strictly beyond the "
+        "corresponding control limits.",
+
+        "- = no Test 1 signal "
+        "at that observation.",
+    ])
+
+    return lines
+
+
+# ======================================================
+# 6. R3.14 - I-MR SESSION OUTPUT
 # ======================================================
 
 def format_imr_report(
     result: ImrResult
 ) -> str:
-    """Format Phase I I-MR results for Session Output.
+    """Format full I-MR Phase I Session Output.
 
-    Advanced SPC Tests 2–4 are reported
-    separately by spc_rules_bridge.py.
+    Statistical results and Test 1 signals originate
+    from the existing engine.
 
-    Uses the shared SPC number formatter.
-    Display formatting never changes
-    statistical values or signals.
+    Advanced SPC Tests 2-4 are reported separately
+    by spc_rules_bridge.py when enabled.
+
+    This function does not modify statistical values.
     """
+
+    # =====================================
+    # 1. VALIDATE RESULT
+    # =====================================
+
+    if not isinstance(result, ImrResult):
+        raise TypeError(
+            "Expected ImrResult from SpcEngine."
+        )
+
+    if (
+        len(result.values) != result.n
+        or len(result.moving_ranges) != result.n - 1
+    ):
+        raise ValueError(
+            "Panjang data I-MR tidak konsisten."
+        )
+
+    f = format_spc_number
 
     preliminary = (
         result.n < RECOMMENDED_N
@@ -431,116 +522,147 @@ def format_imr_report(
     if preliminary:
         heading += " (PRELIMINARY)"
 
-    # Shared presentation-only formatter.
-    f = format_spc_number
+    # =====================================
+    # 2. REPORT HEADER
+    # =====================================
 
     lines = [
         heading,
-        "=" * 56,
+        "=" * 64,
 
         "",
-
         "DATA INFORMATION",
         "-" * 40,
 
-        f"Column             : {result.column_name}",
-        f"Observations       : {result.n}",
-        "Moving Range Span  : 2",
+        f"Column              : {result.column_name}",
+        f"Observations        : {result.n}",
+        f"Moving ranges       : {result.n - 1}",
+        "Moving Range Span   : 2",
 
         "",
-
         "STATISTICAL METHOD",
         "-" * 40,
 
-        "Sigma method       : Average MR / d2 (d2 = 1.128)",
-        "Control limits     : Shewhart 3-sigma",
+        "Within sigma method : MRbar / d2",
+        "Control limits      : Shewhart 3-sigma",
+        "Test 1              : Point strictly beyond limits",
 
-        "Base engine signals: Test 1 only "
-        "(strictly beyond limits)",
-
-        "Advanced SPC Tests : reported separately "
-        "when enabled",
-
-        "Report precision   : 3 decimals / "
-        "scientific notation for extreme values",
+        "Advanced SPC Tests  : "
+        "Reported separately if enabled",
 
         "",
-
-        "MOVING RANGE (MR) — REVIEW VARIATION FIRST",
+        "STATISTICAL CONSTANTS",
         "-" * 40,
 
-        f"UCL                : {f(result.mr_ucl)}",
-        f"CL (MRbar)         : {f(result.mr_center)}",
-        f"LCL                : {f(result.mr_lcl)}",
+        f"d2                  : {D2:.4f}",
+        f"D3                  : {D3:.4f}",
+        f"D4                  : {D4:.4f}",
 
-        "Test 1 signals     : "
+        "",
+        "PROCESS ESTIMATES",
+        "-" * 40,
+
+        f"Individuals Mean    : {f(result.i_center)}",
+        f"Average MR (MRbar)  : {f(result.mr_center)}",
+        f"Within Sigma        : {f(result.sigma_within)}",
+
+        "Within sigma = Average MR / d2",
+
+        "",
+        "MOVING RANGE (MR) CHART",
+        "-" * 40,
+
+        f"UCL                 : {f(result.mr_ucl)}",
+        f"CL (MRbar)          : {f(result.mr_center)}",
+        f"LCL                 : {f(result.mr_lcl)}",
+
+        "Test 1 signals      : "
         + _format_test1_signals(
             result.mr_violations
         ),
 
-        "MR(i) refers to the change between "
-        "observations i-1 and i.",
-
         "",
-
-        "INDIVIDUALS (I) — REVIEW PROCESS LEVEL NEXT",
+        "INDIVIDUALS (I) CHART",
         "-" * 40,
 
-        f"UCL                : {f(result.i_ucl)}",
-        f"CL (mean)          : {f(result.i_center)}",
-        f"LCL                : {f(result.i_lcl)}",
+        f"UCL                 : {f(result.i_ucl)}",
+        f"CL (Mean)           : {f(result.i_center)}",
+        f"LCL                 : {f(result.i_lcl)}",
 
-        f"Within sigma       : "
-        f"{f(result.sigma_within)}",
-
-        "Test 1 signals     : "
+        "Test 1 signals      : "
         + _format_test1_signals(
             result.i_violations
         ),
-
-        "",
-
-        "WARNINGS & ASSUMPTIONS",
-        "-" * 40,
     ]
 
+    # =====================================
+    # 3. OBSERVATION TABLE
+    # =====================================
+
     lines.extend(
-        f"- {warning}"
-        for warning in result.warnings
+        _format_observation_table(result)
     )
+
+    # =====================================
+    # 4. STATISTICAL WARNINGS
+    # =====================================
+
+    if result.warnings:
+        lines.extend([
+            "",
+            "WARNINGS & ASSUMPTIONS",
+            "-" * 40,
+        ])
+
+        lines.extend(
+            f"- {warning}"
+            for warning in result.warnings
+        )
+
+    # =====================================
+    # 5. INTERPRETATION
+    # =====================================
 
     lines.extend([
         "",
-
         "INTERPRETATION NOTES",
         "-" * 40,
 
-        "- Review the MR Chart before "
-        "the Individuals Chart.",
+        "- Review MR variation before "
+        "interpreting the I Chart.",
 
         "- No Test 1 signal does not "
         "prove process stability.",
 
-        "- Control limits are NOT "
-        "specification limits.",
+        "- Control limits are not "
+        "product specification limits.",
 
-        "- Measurement data must be "
-        "time ordered.",
+        "- Observations must be "
+        "ordered chronologically.",
 
-        "- Phase I limits require investigation "
-        "and QC/QA approval.",
+        "- Test 1 is evaluated against "
+        "Phase I limits computed from "
+        "these observations.",
 
-        "- Internal statistical calculations "
-        "retain floating-point precision.",
+        "- Advanced SPC Test findings "
+        "are shown separately "
+        "when enabled.",
 
-        "- Adaptive formatting affects "
-        "display only, not calculations.",
+        "- Calculations retain "
+        "floating-point precision; "
+        "display is rounded.",
 
         "",
+        "STATDESK REPORT INFORMATION",
+        "-" * 40,
 
-        f"StatDesk I-MR engine {SPC_ENGINE_VERSION} | "
-        "Research/testing only; "
-        "not production release criteria",
+        f"Report version      : {IMR_REPORT_VERSION}",
+        f"Statistical engine  : {SPC_ENGINE_VERSION}",
+        "Analysis            : I-MR Phase I",
+        "Control limits     : Calculated by SpcEngine",
+
+        "",
+        "END OF I-MR REPORT",
     ])
 
     return "\n".join(lines)

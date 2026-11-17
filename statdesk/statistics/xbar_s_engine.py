@@ -1,24 +1,24 @@
 
-"""StatDesk Xbar-S Control Chart — Phase I.
+"""StatDesk — Xbar-S Control Chart Phase I.
 
-Equal rational subgroups, size 9..25.
+R3.17 — Statistical Engine & Session Output Refinement.
 
-Statistical method:
-- Subgroup means
-- Sample standard deviation (ddof=1)
-- Sbar / c4 within-sigma estimator
-- Shewhart three-sigma control limits
-- Test 1 special-cause detection
+Statistical methods:
+- Equal rational subgroups, size 9 to 25.
+- Sample standard deviation (ddof=1).
+- Within sigma = Sbar / c4(n).
+- Shewhart 3-sigma control limits.
+- Test 1: points strictly outside control limits.
+- Advanced SPC Tests 2-4 handled by spc_rules_bridge.py.
 
-Display formatting:
-- Shared SPC number formatter
-- Three decimal places for ordinary values
-- Scientific notation for extreme values
-- Full numerical precision during calculations
+R3.17 improvements:
+- Clearer Session Output.
+- Process estimates.
+- Subgroup statistics table.
+- Test 1 signal indicators.
+- Neutral statistical interpretation.
 
-Advanced SPC Tests 2-4 are handled separately by
-spc_rules_bridge.py.
-
+Statistical calculations remain unchanged.
 No GUI or plotting dependencies.
 """
 
@@ -42,8 +42,10 @@ MIN_GROUPS = 2
 MAX_GROUPS = 50_000
 
 MIN_TOTAL_OBSERVATIONS = 60
+MAX_REPORT_ROWS = 30
 
 ENGINE_VERSION = "0.7.0"
+REPORT_VERSION = "0.8.0"
 
 
 # ======================================================
@@ -93,12 +95,12 @@ class XbarSResult:
 # ======================================================
 
 def _c4(n: int) -> float:
-    """Calculate c4(n) using the gamma function ratio.
+    """Calculate the c4 unbiasing constant.
 
     c4(n) = sqrt(2 / (n-1))
             * Gamma(n/2) / Gamma((n-1)/2)
 
-    Do not round the result.
+    Full numerical precision is retained.
     """
 
     return sqrt(2.0 / (n - 1)) * exp(
@@ -115,6 +117,13 @@ class XbarSEngine:
 
     @staticmethod
     def calculate(subgroups) -> XbarSResult:
+        """Calculate Phase I Xbar-S statistics.
+
+        One input row represents one rational subgroup.
+
+        The existing statistical formulas and data
+        validation behavior are preserved.
+        """
 
         # =====================================
         # 1. VALIDATE SUBGROUP COLLECTION
@@ -243,8 +252,8 @@ class XbarSEngine:
             try:
                 avg = fsum(observations) / n
 
-                # Sample standard deviation
-                # uses denominator n-1.
+                # Sample standard deviation:
+                # denominator = n-1.
 
                 s = hypot(
                     *(v - avg for v in observations)
@@ -279,18 +288,18 @@ class XbarSEngine:
 
             sbar = fsum(stdevs) / m
 
-            # c4 unbiasing constant.
+            # C4 unbiasing constant.
             c4 = _c4(n)
 
-            # Estimate within-process sigma.
+            # Within-process sigma estimate.
             sigma = sbar / c4
 
-            # Xbar Chart factor.
+            # Xbar chart factor.
             a3 = 3.0 / (
                 c4 * sqrt(n)
             )
 
-            # S Chart factors.
+            # S chart factors.
             variation_factor = (
                 3.0
                 * sqrt(
@@ -386,8 +395,8 @@ class XbarSEngine:
         # 6. TEST 1 SPECIAL-CAUSE SIGNALS
         # =====================================
 
-        # Points exactly on limits are not
-        # counted as Test 1 violations.
+        # Equality to a control limit is not
+        # considered a Test 1 violation.
 
         xbar_signals = tuple(
             i
@@ -423,26 +432,33 @@ class XbarSEngine:
             warnings.append(
                 "PRELIMINARY: hanya "
                 f"{m * n} observasi; "
-                f"minimal {MIN_TOTAL_OBSERVATIONS} "
-                "direkomendasikan."
+                f"pedoman awal StatDesk menggunakan "
+                f"{MIN_TOTAL_OBSERVATIONS} observasi "
+                "sebagai batas minimum."
             )
 
         warnings.extend((
-            "Phase I: limits dihitung dari semua "
-            "subgrup; investigasi special cause "
-            "sebelum menyetujui baseline.",
+            "Phase I: control limits dihitung dari "
+            "seluruh subgroup yang tersedia. "
+            "Evaluasi special-cause variation "
+            "sebelum menggunakan limits "
+            "sebagai referensi historis.",
 
-            "Periksa S Chart lebih dahulu "
+            "Periksa S Chart terlebih dahulu "
             "sebelum menginterpretasikan "
             "Xbar Chart.",
 
-            "Hanya Test 1 (di luar batas "
-            "3-sigma); tidak membuktikan "
-            "stabilitas.",
+            "Base engine hanya mengevaluasi "
+            "Test 1. Advanced SPC Tests 2-4 "
+            "dievaluasi secara terpisah "
+            "ketika diaktifkan.",
 
-            "Semua subgrup harus rasional, "
-            "berurutan waktu, dan "
-            "berukuran sama.",
+            "Tidak adanya SPC signal tidak "
+            "membuktikan proses telah stabil.",
+
+            "Seluruh subgroup harus rasional, "
+            "berurutan berdasarkan waktu, "
+            "dan memiliki ukuran yang sama.",
         ))
 
         # =====================================
@@ -483,7 +499,7 @@ class XbarSEngine:
 # ======================================================
 
 def _format_test1_signals(indices) -> str:
-    """Format original 1-based subgroup indexes."""
+    """Format original 1-based subgroup numbers."""
 
     if not indices:
         return "Tidak ada (Test 1)"
@@ -495,25 +511,138 @@ def _format_test1_signals(indices) -> str:
 
 
 # ======================================================
-# 7. FORMAT XBAR-S SESSION REPORT
+# 7. R3.17 - SUBGROUP STATISTICS TABLE
+# ======================================================
+
+def _format_subgroup_table(
+    result: XbarSResult
+) -> list[str]:
+    """Display subgroup means and sample SD.
+
+    All values and Test 1 signal positions originate
+    from the existing statistical engine.
+
+    Control limits are not recalculated here.
+    """
+
+    f = format_spc_number
+
+    xbar_signals = set(
+        result.xbar_signals
+    )
+
+    s_signals = set(
+        result.s_signals
+    )
+
+    lines = [
+        "",
+        "SUBGROUP STATISTICS",
+        "-" * 62,
+
+        (
+            f"{'No':>4} | "
+            f"{'Xbar':>12} | "
+            f"{'Sample SD':>12} | "
+            f"{'Xbar T1':>7} | "
+            f"{'S T1':>5}"
+        ),
+
+        "-" * 62,
+    ]
+
+    total = result.subgroup_count
+
+    shown = min(
+        total,
+        MAX_REPORT_ROWS,
+    )
+
+    for index in range(shown):
+        number = index + 1
+
+        mean = result.subgroup_means[index]
+        sd = result.subgroup_stdevs[index]
+
+        xbar_status = (
+            "T1"
+            if number in xbar_signals
+            else "-"
+        )
+
+        s_status = (
+            "T1"
+            if number in s_signals
+            else "-"
+        )
+
+        lines.append(
+            f"{number:>4} | "
+            f"{f(mean):>12} | "
+            f"{f(sd):>12} | "
+            f"{xbar_status:>7} | "
+            f"{s_status:>5}"
+        )
+
+    omitted = total - shown
+
+    if omitted > 0:
+        lines.extend([
+            "",
+            f"... {omitted} subgroup rows omitted "
+            "from Session Output.",
+
+            "All subgroups were still used "
+            "for statistical calculations.",
+        ])
+
+    lines.extend([
+        "",
+        "Sample SD uses denominator (n-1).",
+        "T1 = point strictly beyond control limits.",
+        "-  = no Test 1 signal.",
+    ])
+
+    return lines
+
+
+# ======================================================
+# 8. R3.17 - FORMAT XBAR-S SESSION REPORT
 # ======================================================
 
 def format_xbar_s_report(
     result: XbarSResult
 ) -> str:
-    """Build Xbar-S Phase I Session Output.
+    """Build complete Xbar-S Phase I Session Output.
 
-    Statistical results come from XbarSEngine.
+    Statistical estimates and SPC Test 1 signals are
+    read directly from the original engine result.
 
-    All displayed statistical values use the
-    shared SPC number formatter.
-
-    Advanced SPC Tests 2-4 are reported
-    separately by spc_rules_bridge.
-
-    Display formatting does not alter
-    statistical calculations.
+    Advanced SPC Tests 2-4 are reported separately
+    by spc_rules_bridge.py when enabled.
     """
+
+    # =====================================
+    # 1. VALIDATE RESULT
+    # =====================================
+
+    if not isinstance(result, XbarSResult):
+        raise TypeError(
+            "Expected XbarSResult from XbarSEngine."
+        )
+
+    if (
+        len(result.subgroup_means)
+        != result.subgroup_count
+        or len(result.subgroup_stdevs)
+        != result.subgroup_count
+    ):
+        raise ValueError(
+            "Jumlah statistik subgroup "
+            "tidak konsisten."
+        )
+
+    f = format_spc_number
 
     total_measurements = (
         result.subgroup_count
@@ -532,143 +661,157 @@ def format_xbar_s_report(
     if preliminary:
         heading += " (PRELIMINARY)"
 
-    f = format_spc_number
+    # =====================================
+    # 2. REPORT HEADER
+    # =====================================
 
     lines = [
         heading,
-        "=" * 56,
+        "=" * 62,
 
         "",
-
         "DATA INFORMATION",
         "-" * 40,
 
-        f"Subgroups          : "
-        f"{result.subgroup_count}",
-
-        f"Subgroup size      : "
-        f"{result.subgroup_size}",
-
-        f"Total measurements : "
-        f"{total_measurements}",
-
-        "Data layout        : "
-        "one subgroup per row",
+        f"Subgroups           : {result.subgroup_count}",
+        f"Subgroup size       : {result.subgroup_size}",
+        f"Total measurements  : {total_measurements}",
+        "Data layout         : One subgroup per row",
 
         "",
-
         "STATISTICAL METHOD",
         "-" * 40,
 
-        "Sigma method       : Sbar / c4(n)",
+        "Within sigma method : Sbar / c4(n)",
+        "Standard deviation  : Sample SD (n-1)",
+        "Control limits      : Shewhart 3-sigma",
+        "Base engine signals : SPC Test 1",
 
-        "Standard deviation : "
-        "sample SD (n-1)",
-
-        "Control limits     : "
-        "Shewhart 3-sigma",
-
-        "Base engine signals: Test 1 only",
-
-        "Advanced SPC Tests : reported "
-        "separately when enabled",
-
-        "Report precision   : 3 decimals / "
-        "scientific notation for extreme values",
+        "Advanced SPC Tests  : Reported separately "
+        "when enabled",
 
         "",
-
         "STATISTICAL CONSTANTS",
         "-" * 40,
 
-        f"c4(n)              : {f(result.c4)}",
-        f"A3                 : {f(result.a3)}",
-        f"B3                 : {f(result.b3)}",
-        f"B4                 : {f(result.b4)}",
-
-        "Constants note     : values above "
-        "are display-rounded; calculations "
-        "use full precision",
+        f"c4(n)               : {f(result.c4)}",
+        f"A3                  : {f(result.a3)}",
+        f"B3                  : {f(result.b3)}",
+        f"B4                  : {f(result.b4)}",
 
         "",
-
-        "S CHART — REVIEW VARIATION FIRST",
+        "PROCESS ESTIMATES",
         "-" * 40,
 
-        f"UCL                : {f(result.s_ucl)}",
-        f"CL (Sbar)          : {f(result.s_center)}",
-        f"LCL                : {f(result.s_lcl)}",
+        f"Grand Mean          : {f(result.xbar_center)}",
+        f"Average SD (Sbar)   : {f(result.s_center)}",
+        f"Within Sigma        : {f(result.sigma_within)}",
 
-        "Test 1 signals     : "
+        "",
+        "Within Sigma = Sbar / c4(n)",
+
+        "",
+        "S CHART — PROCESS VARIATION",
+        "-" * 40,
+
+        f"UCL                 : {f(result.s_ucl)}",
+        f"CL (Sbar)           : {f(result.s_center)}",
+        f"LCL                 : {f(result.s_lcl)}",
+
+        "Test 1 signals      : "
         + _format_test1_signals(
             result.s_signals
         ),
 
         "",
-
-        "XBAR CHART — REVIEW SUBGROUP MEANS NEXT",
+        "XBAR CHART — PROCESS CENTER",
         "-" * 40,
 
-        f"UCL                : {f(result.xbar_ucl)}",
-        f"CL (grand mean)    : {f(result.xbar_center)}",
-        f"LCL                : {f(result.xbar_lcl)}",
+        f"UCL                 : {f(result.xbar_ucl)}",
+        f"CL (Grand Mean)     : {f(result.xbar_center)}",
+        f"LCL                 : {f(result.xbar_lcl)}",
 
-        f"Within sigma       : {f(result.sigma_within)}",
-
-        "Test 1 signals     : "
+        "Test 1 signals      : "
         + _format_test1_signals(
             result.xbar_signals
         ),
-
-        "",
-
-        "WARNINGS & ASSUMPTIONS",
-        "-" * 40,
     ]
 
+    # =====================================
+    # 3. SUBGROUP STATISTICS
+    # =====================================
+
     lines.extend(
-        f"- {warning}"
-        for warning in result.warnings
+        _format_subgroup_table(result)
     )
+
+    # =====================================
+    # 4. STATISTICAL WARNINGS
+    # =====================================
+
+    if result.warnings:
+        lines.extend([
+            "",
+            "WARNINGS & ASSUMPTIONS",
+            "-" * 40,
+        ])
+
+        lines.extend(
+            f"- {warning}"
+            for warning in result.warnings
+        )
+
+    # =====================================
+    # 5. INTERPRETATION NOTES
+    # =====================================
 
     lines.extend([
         "",
-
         "INTERPRETATION NOTES",
         "-" * 40,
 
         "- Review the S Chart before "
-        "the Xbar Chart.",
+        "interpreting the Xbar Chart.",
 
-        "- Absence of Test 1 signals "
-        "does not prove process stability.",
+        "- Xbar and S control limits are "
+        "calculated from all Phase I subgroups.",
 
-        "- Control limits are not "
-        "product specification limits.",
+        "- SPC Test 1 detects points strictly "
+        "outside the control limits.",
 
-        "- All subgroup measurements must "
-        "be ordered and collected as "
-        "rational subgroups.",
+        "- No detected signal does not prove "
+        "process stability.",
 
-        "- Phase I control limits require "
-        "QC/QA investigation and approval.",
+        "- Rational subgroups should represent "
+        "comparable process conditions.",
 
-        "- Internal statistical calculations "
-        "retain full floating-point precision.",
+        "- Subgroups must be ordered by time.",
 
-        "- Adaptive formatting affects "
-        "display only, not calculations.",
+        "- Control limits are not product "
+        "specification limits.",
 
-        "- Observed agreement with reference "
-        "software does not establish "
-        "full standards compliance.",
+        "- Numerical calculations retain "
+        "floating-point precision.",
+
+        "- Displayed statistical values "
+        "are rounded.",
+
+        "- Results should be compared with "
+        "reference statistical software "
+        "using the same calculation method.",
 
         "",
+        "STATDESK REPORT INFORMATION",
+        "-" * 40,
 
-        f"StatDesk Xbar-S engine "
-        f"{ENGINE_VERSION} | "
-        "Research/testing only; "
-        "QC/QA sign-off required",
+        f"Report version      : {REPORT_VERSION}",
+        f"Statistical engine  : {ENGINE_VERSION}",
+        "Analysis            : Xbar-S Phase I",
+        "Sigma estimator     : Sbar / c4(n)",
+        "Control limits      : Calculated by engine",
+
+        "",
+        "END OF XBAR-S REPORT",
     ])
 
     return "\n".join(lines)

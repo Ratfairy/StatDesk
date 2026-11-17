@@ -3,15 +3,18 @@
 
 Statistical workflow:
 1. Estimate historical mean and sigma from rational subgroups,
-   using the existing Phase I XbarREngine (Rbar / d2); OR
-   enter historical mean and sigma directly.
+   using the Phase I XbarREngine (Rbar / d2), or enter parameters.
 2. Calculate fixed Shewhart 3-sigma Xbar and R control limits.
-3. Evaluate new subgroups against those historical limits.
-4. Report SPC Tests 1-4, without recalculating monitoring limits.
+3. Monitor new subgroups against those historical limits.
+4. Report SPC Tests 1-4 without recalculating control limits.
 
-This module has no GUI, approval, authentication, or disk dependencies.
-Subgroup sizes are 2..8, matching the current Xbar-R engine.
-SPC run tests are evaluated per batch (no cross-batch continuity).
+R3.13:
+- Enhanced Phase II Session Output.
+- Individual SPC Test results for Xbar and R.
+- Subgroup statistics with signal labels.
+- Distinguish insufficient rule windows from no signals.
+
+No administrative QA/QC workflows.
 """
 
 from dataclasses import dataclass
@@ -46,12 +49,12 @@ from statdesk.statistics.xbar_r_engine import (
 # ======================================================
 
 PHASE2_VERSION = "0.2.0"
+PHASE2_REPORT_VERSION = "0.3.0"
 
 MAX_SUBGROUPS = 50_000
 MAX_REPORT_ROWS = 30
 
 BASELINE_SCREENING_TESTS = (1, 2, 3, 4)
-
 DEFAULT_HISTORICAL_TESTS = BASELINE_SCREENING_TESTS
 
 
@@ -64,20 +67,12 @@ class Phase2Error(ValueError):
 
 
 # ======================================================
-# 3. IMMUTABLE RESULT CONTRACTS
+# 3. RESULT CONTRACTS
 # ======================================================
 
 @dataclass(frozen=True)
 class XbarRHistoricalLimits:
-    """Fixed Xbar-R limits for one subgroup size.
-
-    source:
-        "estimated" — from historical subgroups
-        "specified" — historical mean and sigma entered manually
-
-    The SHA-256 fingerprint records the converted historical
-    floating-point input values when parameters are estimated.
-    """
+    """Fixed historical Xbar-R limits for one subgroup size."""
 
     subgroup_size: int
 
@@ -107,10 +102,7 @@ class XbarRHistoricalLimits:
     warnings: tuple[str, ...] = ()
 
 
-# Compatibility with the existing R3 Step-1 GUI.
-# The old GUI reads process_id, characteristic, unit,
-# subgroup_count, source_sha256, and control limits.
-
+# Backward compatibility with the earlier R3 interface.
 XbarRBaselineCandidate = XbarRHistoricalLimits
 
 
@@ -132,7 +124,7 @@ class Phase2XbarRResult:
 
 
 # ======================================================
-# 4. COMMON NUMERICAL VALIDATION
+# 4. NUMERICAL VALIDATION
 # ======================================================
 
 def _finite_number(raw, label: str) -> float:
@@ -197,7 +189,7 @@ def _subgroup_size(value) -> int:
 
 
 # ======================================================
-# 5. SUBGROUP DATA VALIDATION
+# 5. SUBGROUP VALIDATION
 # ======================================================
 
 def _read_subgroups(
@@ -205,15 +197,7 @@ def _read_subgroups(
     *,
     expected_size=None,
 ) -> tuple[tuple[float, ...], ...]:
-    """Read ordered, equal-size rational subgroups.
-
-    Rules:
-    - One row represents one subgroup.
-    - Each subgroup has equal measurement count.
-    - Measurements must be finite numeric values.
-    - Missing values are not silently omitted.
-    - Original row order is preserved.
-    """
+    """Read ordered, complete, equal-size rational subgroups."""
 
     if expected_size is not None:
         _subgroup_size(expected_size)
@@ -238,7 +222,6 @@ def _read_subgroups(
         iterator,
         start=1,
     ):
-
         if row_index > MAX_SUBGROUPS:
             raise Phase2Error(
                 f"Maksimal {MAX_SUBGROUPS} subgroup."
@@ -295,11 +278,7 @@ def _read_subgroups(
 def _digest(
     groups: tuple[tuple[float, ...], ...],
 ) -> str:
-    """Create a deterministic historical-data fingerprint.
-
-    Float.hex() preserves the binary floating-point
-    representation used by the calculation engine.
-    """
+    """Create a deterministic fingerprint of historical data."""
 
     payload = [
         [value.hex() for value in row]
@@ -322,7 +301,7 @@ def _validate_tests(
     enabled_tests,
     rule_profile,
 ) -> tuple[int, ...]:
-    """Validate SPC Tests and rule profile."""
+    """Validate selected SPC Tests and rule profile."""
 
     try:
         windows = get_rule_windows(rule_profile)
@@ -366,7 +345,7 @@ def _evaluate(
     enabled_tests,
     rule_profile,
 ) -> RulesResult:
-    """Evaluate existing SPC rules without changing limits."""
+    """Evaluate SPC rules without changing control limits."""
 
     try:
         return evaluate_spc_rules(
@@ -391,7 +370,7 @@ def _evaluate(
 def _validate_limits(
     limits,
 ) -> XbarRHistoricalLimits:
-    """Validate the structure and numerical limits."""
+    """Validate historical parameters and control limits."""
 
     if not isinstance(
         limits,
@@ -483,8 +462,6 @@ def create_xbar_r_historical_limits(
 ) -> XbarRHistoricalLimits:
     """Calculate historical Xbar-R limits from mean and sigma.
 
-    For constant subgroup size n:
-
     Xbar:
         CL  = mu
         UCL = mu + 3*sigma/sqrt(n)
@@ -495,8 +472,7 @@ def create_xbar_r_historical_limits(
         UCL = (d2 + 3*d3)*sigma
         LCL = max(0, (d2 - 3*d3)*sigma)
 
-    sigma is within-process standard deviation,
-    NOT the average subgroup range.
+    Sigma represents within-process standard deviation.
     """
 
     n = _subgroup_size(subgroup_size)
@@ -517,7 +493,6 @@ def create_xbar_r_historical_limits(
             "lebih besar dari nol."
         )
 
-    # Reuse published constants from the Phase I engine.
     d2, d3 = RANGE_CONSTANTS[n]
 
     try:
@@ -527,10 +502,7 @@ def create_xbar_r_historical_limits(
         xbar_lcl = mu - margin
 
         r_cl = d2 * sigma
-
-        r_ucl = (
-            (d2 + 3.0 * d3) * sigma
-        )
+        r_ucl = (d2 + 3.0 * d3) * sigma
 
         r_lcl = max(
             0.0,
@@ -581,7 +553,7 @@ def create_xbar_r_historical_limits(
 
 
 # ======================================================
-# 10. ESTIMATE HISTORICAL PARAMETERS FROM DATA
+# 10. ESTIMATE HISTORICAL PARAMETERS
 # ======================================================
 
 def estimate_xbar_r_historical_limits(
@@ -593,19 +565,9 @@ def estimate_xbar_r_historical_limits(
     enabled_tests=DEFAULT_HISTORICAL_TESTS,
     rule_profile=RULE_PROFILE_STANDARD,
 ) -> XbarRHistoricalLimits:
-    """Estimate historical limits with existing XbarREngine.
+    """Estimate historical limits using Phase I Xbar-R.
 
-    Steps:
-    1. Validate historical subgroups.
-    2. Reuse Phase I Xbar-R calculations.
-    3. Estimate sigma using Rbar/d2.
-    4. Evaluate historical SPC Tests.
-    5. Return fixed historical limits.
-
-    SPC findings are reported, not automatically removed.
-
-    A short history may not have enough points to
-    complete the window of every selected SPC test.
+    Historical SPC findings are reported, not removed.
     """
 
     selected = _validate_tests(
@@ -623,10 +585,6 @@ def estimate_xbar_r_historical_limits(
             "dua subgroup."
         )
 
-    # ======================================
-    # REUSE EXISTING PHASE I ENGINE
-    # ======================================
-
     try:
         phase1 = XbarREngine.calculate(groups)
 
@@ -635,10 +593,7 @@ def estimate_xbar_r_historical_limits(
             str(exc)
         ) from exc
 
-    # ======================================
-    # HISTORICAL SPC TESTS
-    # ======================================
-
+    # Historical SPC Rules
     r_rules = _evaluate(
         phase1.ranges,
         cl=phase1.r_cl,
@@ -657,19 +612,13 @@ def estimate_xbar_r_historical_limits(
         rule_profile=rule_profile,
     )
 
-    # ======================================
-    # METHOD NOTES
-    # ======================================
-
     warnings = [
         "Sigma within diestimasi dengan Rbar/d2.",
         "Konstanta d2/d3 menggunakan nilai "
         "tabel publikasi yang dibulatkan.",
     ]
 
-    windows = get_rule_windows(
-        rule_profile
-    )
+    windows = get_rule_windows(rule_profile)
 
     missing_windows = [
         f"T{test} ({windows[test]} titik)"
@@ -695,26 +644,12 @@ def estimate_xbar_r_historical_limits(
             "parameter tersebut."
         )
 
-    # ======================================
-    # HISTORICAL SIGMA
-    # ======================================
-
-    # XbarRResult currently exposes R center,
-    # but does not expose sigma_within directly.
-    #
-    # sigma = Rbar / d2
-
+    # Within sigma from the existing Phase I estimator.
     d2 = RANGE_CONSTANTS[
         phase1.subgroup_size
     ][0]
 
-    sigma_within = (
-        phase1.r_cl / d2
-    )
-
-    # ======================================
-    # RETURN HISTORICAL LIMITS
-    # ======================================
+    sigma_within = phase1.r_cl / d2
 
     limits = XbarRHistoricalLimits(
         subgroup_size=phase1.subgroup_size,
@@ -757,7 +692,7 @@ def estimate_xbar_r_historical_limits(
 
 
 # ======================================================
-# 11. COMPATIBILITY WITH OLD R3 CANDIDATE GUI
+# 11. BACKWARD COMPATIBILITY
 # ======================================================
 
 def build_xbar_r_baseline_candidate(
@@ -767,13 +702,7 @@ def build_xbar_r_baseline_candidate(
     characteristic,
     unit,
 ) -> XbarRHistoricalLimits:
-    """Compatibility entry point for the old R3 GUI.
-
-    New GUI code should call:
-        estimate_xbar_r_historical_limits()
-
-    This wrapper retains the old metadata arguments.
-    """
+    """Compatibility entry point for the older R3 interface."""
 
     if not all((
         _optional_text(
@@ -801,13 +730,7 @@ def build_xbar_r_baseline_candidate(
         unit=unit,
     )
 
-    # The old GUI hard-codes "No SPC Tests 1-4 findings"
-    # in its Session Output. Reject that obsolete GUI path
-    # if signals exist, rather than displaying false results.
-    #
-    # The new estimation function above DOES NOT block
-    # historical data merely because signals were detected.
-
+    # Preserve the original compatibility behavior.
     if (
         limits.historical_r_rules.findings
         or limits.historical_xbar_rules.findings
@@ -822,7 +745,7 @@ def build_xbar_r_baseline_candidate(
 
 
 # ======================================================
-# 12. PHASE II MONITORING
+# 12. PHASE II MONITORING ENGINE
 # ======================================================
 
 def monitor_xbar_r_phase2(
@@ -832,16 +755,10 @@ def monitor_xbar_r_phase2(
     enabled_tests=(1,),
     rule_profile=RULE_PROFILE_STANDARD,
 ) -> Phase2XbarRResult:
-    """Monitor new subgroups against fixed historical limits.
+    """Monitor new data against fixed historical limits.
 
-    Historical control limits are NOT recalculated.
-
-    Monitoring subgroups are used only to calculate:
-    - Subgroup means.
-    - Subgroup ranges.
-    - SPC signal findings.
-
-    SPC run tests restart at the beginning of each batch.
+    Control limits are not recalculated.
+    SPC run tests restart for each monitoring batch.
     """
 
     limits = _validate_limits(
@@ -861,23 +778,13 @@ def monitor_xbar_r_phase2(
     means = []
     ranges = []
 
-    # ======================================
-    # NEW SUBGROUP STATISTICS
-    # ======================================
-
     for index, row in enumerate(
         groups,
         start=1,
     ):
-
         try:
-            mean = (
-                fsum(row) / len(row)
-            )
-
-            spread = (
-                max(row) - min(row)
-            )
+            mean = fsum(row) / len(row)
+            spread = max(row) - min(row)
 
         except (
             ValueError,
@@ -899,10 +806,6 @@ def monitor_xbar_r_phase2(
 
         means.append(mean)
         ranges.append(spread)
-
-    # ======================================
-    # EVALUATE USING HISTORICAL LIMITS
-    # ======================================
 
     r_rules = _evaluate(
         ranges,
@@ -934,13 +837,13 @@ def monitor_xbar_r_phase2(
 
 
 # ======================================================
-# 13. SPC SIGNAL FORMATTER
+# 13. COMMON SPC SIGNAL FORMATTER
 # ======================================================
 
 def _signals(
     rules: RulesResult | None,
 ) -> str:
-    """Format SPC findings using 1-based point indexes."""
+    """Format findings as T1@point, T2@point, etc."""
 
     if rules is None:
         return "Tidak diperiksa"
@@ -955,16 +858,15 @@ def _signals(
 
 
 # ======================================================
-# 14. HISTORICAL LIMITS SESSION OUTPUT
+# 14. HISTORICAL PARAMETERS SESSION OUTPUT
 # ======================================================
 
 def format_xbar_r_historical_limits_report(
     limits: XbarRHistoricalLimits,
 ) -> str:
-    """Format estimated or manually specified control limits."""
+    """Format historical control limits and screening results."""
 
     ref = _validate_limits(limits)
-
     f = format_spc_number
 
     lines = [
@@ -1019,7 +921,6 @@ def format_xbar_r_historical_limits_report(
     if ref.source == "estimated":
         lines += [
             "",
-
             "HISTORICAL SPC TESTS",
 
             "R signals           : "
@@ -1042,9 +943,7 @@ def format_xbar_r_historical_limits_report(
 
     lines += [
         "",
-
         "- Control limits are not specification limits.",
-
         "- Calculations retain full float precision; "
         "display is rounded.",
 
@@ -1055,13 +954,182 @@ def format_xbar_r_historical_limits_report(
 
 
 # ======================================================
-# 15. PHASE II MONITORING SESSION OUTPUT
+# 15. R3.13 - REPORT HELPER FUNCTIONS
+# ======================================================
+
+def _rule_test_summary(
+    rules: RulesResult,
+    chart_name: str,
+) -> list[str]:
+    """Describe each SPC Test using existing engine findings.
+
+    No signal:
+        The test had enough observations but no finding.
+
+    Insufficient data:
+        The test's required window cannot yet be completed.
+    """
+
+    windows = get_rule_windows(
+        rules.rule_profile
+    )
+
+    lines = [
+        "",
+        f"{chart_name} — SPC TEST DETAILS",
+        "-" * 56,
+    ]
+
+    for test in rules.enabled_tests:
+        required = windows[test]
+
+        findings = [
+            item
+            for item in rules.findings
+            if item.test == test
+        ]
+
+        if rules.n_points < required:
+            lines.append(
+                f"Test {test}: BELUM CUKUP DATA "
+                f"({rules.n_points}/{required} titik)"
+            )
+            continue
+
+        if not findings:
+            lines.append(
+                f"Test {test}: Tidak ada signal"
+            )
+            continue
+
+        locations = []
+
+        for finding in findings:
+            if test == 1:
+                locations.append(
+                    f"T1@{finding.point}"
+                )
+            else:
+                locations.append(
+                    f"T{test}@{finding.point} "
+                    f"(window {finding.window_start}-"
+                    f"{finding.point})"
+                )
+
+        lines.append(
+            f"Test {test}: "
+            + ", ".join(locations)
+        )
+
+    return lines
+
+
+def _signal_tags_at(
+    rules: RulesResult,
+    subgroup_number: int,
+) -> str:
+    """Return all SPC Test labels ending at one subgroup."""
+
+    tests = sorted({
+        finding.test
+        for finding in rules.findings
+        if finding.point == subgroup_number
+    })
+
+    if not tests:
+        return "-"
+
+    return ",".join(
+        f"T{test}"
+        for test in tests
+    )
+
+
+def _monitoring_table(
+    result: Phase2XbarRResult,
+) -> list[str]:
+    """Format subgroup statistics without recalculating them."""
+
+    f = format_spc_number
+
+    total = len(result.means)
+
+    shown = min(
+        total,
+        MAX_REPORT_ROWS,
+    )
+
+    lines = [
+        "",
+        "MONITORING SUBGROUP STATISTICS",
+        "-" * 68,
+
+        (
+            f"{'No':>4} | "
+            f"{'Xbar':>12} | "
+            f"{'Range':>12} | "
+            f"{'Xbar Tests':>12} | "
+            f"{'R Tests':>10}"
+        ),
+
+        "-" * 68,
+    ]
+
+    for index in range(shown):
+        number = index + 1
+
+        xbar_tags = _signal_tags_at(
+            result.xbar_rules,
+            number,
+        )
+
+        r_tags = _signal_tags_at(
+            result.r_rules,
+            number,
+        )
+
+        lines.append(
+            f"{number:>4} | "
+            f"{f(result.means[index]):>12} | "
+            f"{f(result.ranges[index]):>12} | "
+            f"{xbar_tags:>12} | "
+            f"{r_tags:>10}"
+        )
+
+    omitted = total - shown
+
+    if omitted > 0:
+        lines.extend([
+            "",
+            f"... {omitted} subgroup rows omitted "
+            "from Session Output.",
+            "All monitoring points were still evaluated "
+            "by the statistical engine.",
+        ])
+
+    lines.extend([
+        "",
+        "T1-T4 = detected SPC Test at this subgroup.",
+        "-     = no detected signal at this subgroup.",
+    ])
+
+    return lines
+
+
+# ======================================================
+# 16. R3.13 - PHASE II SESSION OUTPUT
 # ======================================================
 
 def format_phase2_xbar_r_report(
     result: Phase2XbarRResult,
 ) -> str:
-    """Format monitoring results using frozen historical limits."""
+    """Generate a complete Xbar-R Phase II monitoring report.
+
+    Historical control limits, subgroup statistics,
+    and SPC findings originate from the existing engine.
+
+    This function does not modify or recalculate limits.
+    """
 
     if not isinstance(
         result,
@@ -1077,6 +1145,8 @@ def format_phase2_xbar_r_report(
 
     f = format_spc_number
 
+    subgroup_count = len(result.means)
+
     selected = ", ".join(
         str(test)
         for test in result.xbar_rules.enabled_tests
@@ -1084,94 +1154,186 @@ def format_phase2_xbar_r_report(
 
     profile = result.xbar_rules.rule_profile
 
+    source_name = (
+        "Estimated from historical data"
+        if ref.source == "estimated"
+        else "Manually specified historical parameters"
+    )
+
+    # ==========================================
+    # A. REPORT HEADER
+    # ==========================================
+
     lines = [
-        "XBAR-R PHASE II — HISTORICAL CONTROL LIMITS",
-        "=" * 56,
-
-        f"Source              : {ref.source}",
-        f"Subgroup size       : {ref.subgroup_size}",
-        f"Monitoring subgroups: {len(result.means)}",
-
-        f"Historical mean     : {f(ref.historical_mean)}",
-        f"Historical sigma    : {f(ref.historical_sigma)}",
+        "XBAR-R CONTROL CHART — PHASE II",
+        "=" * 68,
 
         "",
+        "DATA INFORMATION",
+        "-" * 40,
 
-        "R CHART (fixed limits)",
-
-        f"UCL                 : {f(ref.r_ucl)}",
-        f"CL                  : {f(ref.r_cl)}",
-        f"LCL                 : {f(ref.r_lcl)}",
-
-        "",
-
-        "XBAR CHART (fixed limits)",
-
-        f"UCL                 : {f(ref.xbar_ucl)}",
-        f"CL                  : {f(ref.xbar_cl)}",
-        f"LCL                 : {f(ref.xbar_lcl)}",
+        f"Monitoring subgroups  : {subgroup_count}",
+        f"Subgroup size         : {ref.subgroup_size}",
+        f"Total measurements    : "
+        f"{subgroup_count * ref.subgroup_size}",
 
         "",
+        "HISTORICAL PARAMETERS",
+        "-" * 40,
 
-        "SPC SIGNALS (monitoring batch)",
-
-        f"Enabled Tests       : {selected}",
-        f"Rule profile        : {profile}",
-
-        f"R signals           : {_signals(result.r_rules)}",
-        f"Xbar signals        : {_signals(result.xbar_rules)}",
-
-        "",
-
-        "MONITORING SUBGROUP STATISTICS",
-
-        "Subgroup | Xbar | R",
+        f"Parameter source      : {source_name}",
+        f"Historical mean       : {f(ref.historical_mean)}",
+        f"Historical sigma      : {f(ref.historical_sigma)}",
     ]
 
-    for index, (mean, spread) in enumerate(
-        zip(result.means, result.ranges),
-        start=1,
-    ):
-
-        if index > MAX_REPORT_ROWS:
-            omitted = (
-                len(result.means) - MAX_REPORT_ROWS
-            )
-
-            lines.append(
-                f"... {omitted} rows omitted "
-                "from Session Output"
-            )
-
-            break
-
+    if ref.subgroup_count:
         lines.append(
-            f"{index:8} | "
-            f"{f(mean):>12} | "
-            f"{f(spread):>12}"
+            f"Historical subgroups  : {ref.subgroup_count}"
         )
 
-    lines += [
+    # ==========================================
+    # B. STATISTICAL METHOD
+    # ==========================================
+
+    d2, d3 = RANGE_CONSTANTS[
+        ref.subgroup_size
+    ]
+
+    lines.extend([
         "",
+        "STATISTICAL METHOD",
+        "-" * 40,
 
+        "Chart type            : Xbar-R Phase II",
+        "Control limit method  : Shewhart 3-sigma",
+        "Historical limits     : FIXED",
+        "Monitoring limits     : Not recalculated",
+
+        f"d2                    : {d2:.4f}",
+        f"d3                    : {d3:.4f}",
+
+        "",
+        "XBAR CHART — FIXED HISTORICAL LIMITS",
+        "-" * 40,
+
+        f"UCL                   : {f(ref.xbar_ucl)}",
+        f"CL                    : {f(ref.xbar_cl)}",
+        f"LCL                   : {f(ref.xbar_lcl)}",
+
+        "",
+        "R CHART — FIXED HISTORICAL LIMITS",
+        "-" * 40,
+
+        f"UCL                   : {f(ref.r_ucl)}",
+        f"CL                    : {f(ref.r_cl)}",
+        f"LCL                   : {f(ref.r_lcl)}",
+    ])
+
+    # ==========================================
+    # C. SPC CONFIGURATION
+    # ==========================================
+
+    lines.extend([
+        "",
+        "SPC TEST CONFIGURATION",
+        "-" * 40,
+
+        f"Enabled Tests         : {selected}",
+        f"Rule profile          : {profile}",
+        "Signal numbering      : 1-based subgroup index",
+
+        "",
+        "SPC SIGNAL SUMMARY",
+        "-" * 40,
+
+        f"Xbar signals          : {_signals(result.xbar_rules)}",
+        f"R signals             : {_signals(result.r_rules)}",
+
+        f"Xbar findings         : "
+        f"{len(result.xbar_rules.findings)}",
+
+        f"R findings            : "
+        f"{len(result.r_rules.findings)}",
+    ])
+
+    # ==========================================
+    # D. INDIVIDUAL RULE RESULTS
+    # ==========================================
+
+    lines.extend(
+        _rule_test_summary(
+            result.xbar_rules,
+            "XBAR CHART",
+        )
+    )
+
+    lines.extend(
+        _rule_test_summary(
+            result.r_rules,
+            "R CHART",
+        )
+    )
+
+    # ==========================================
+    # E. SUBGROUP RESULTS
+    # ==========================================
+
+    lines.extend(
+        _monitoring_table(result)
+    )
+
+    # ==========================================
+    # F. INTERPRETATION
+    # ==========================================
+
+    lines.extend([
+        "",
         "INTERPRETATION NOTES",
+        "-" * 40,
 
-        "- Monitoring points do not change "
-        "historical control limits.",
+        "- Historical control limits remain fixed "
+        "during Phase II monitoring.",
 
-        "- SPC run tests restart in each batch; "
-        "continuity is not implemented.",
+        "- New observations are evaluated against "
+        "the historical control limits.",
 
-        "- Signal numbers are 1-based within "
-        "this monitoring batch.",
+        "- SPC Test 1 identifies points strictly "
+        "outside the control limits.",
+
+        "- SPC Tests 2-4 require enough consecutive "
+        "subgroups to evaluate their patterns.",
+
+        "- Insufficient data for a rule window "
+        "does not mean the rule has passed.",
+
+        "- SPC run tests restart within each "
+        "monitoring batch; cross-batch continuity "
+        "is not implemented.",
+
+        "- Signal numbers refer to subgroup "
+        "positions in the current monitoring batch.",
+
+        "- No detected signal does not prove "
+        "that a process is statistically stable.",
 
         "- Control limits are not product "
         "specification limits.",
 
-        "- Display formatting does not round "
-        "statistical calculations.",
+        "- Statistical calculations retain "
+        "floating-point precision; displayed "
+        "values are rounded.",
 
-        f"StatDesk Phase II Engine {PHASE2_VERSION}",
-    ]
+        "",
+        "STATDESK REPORT INFORMATION",
+        "-" * 40,
+
+        f"Report version        : {PHASE2_REPORT_VERSION}",
+        f"Phase II engine       : {PHASE2_VERSION}",
+        "Analysis              : Xbar-R Phase II",
+        "Historical limits     : Unchanged",
+
+        "",
+        "END OF XBAR-R PHASE II REPORT",
+    ])
 
     return "\n".join(lines)

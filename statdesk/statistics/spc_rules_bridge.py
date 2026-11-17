@@ -1,8 +1,7 @@
 
 """StatDesk — Advanced SPC Rules Integration.
 
-Connect existing statistical control chart results
-to optional SPC Tests 1 through 4.
+R3.16 - Advanced SPC Session Output Refinement.
 
 Supported charts:
 - I-MR
@@ -10,16 +9,16 @@ Supported charts:
 - Xbar-S
 
 Responsibilities:
-- Evaluate enabled SPC rules.
+- Evaluate SPC Tests 1 through 4.
 - Preserve existing statistical control limits.
-- Verify Test 1 consistency with the base engine.
-- Maintain original observation numbering.
-- Support StatDesk and experimental rule profiles.
-- Generate Advanced SPC Session Output.
-- Format numbers using shared SPC formatter.
+- Verify Test 1 consistency with the original engine.
+- Preserve original observation numbering.
+- Support selectable SPC rule profiles.
+- Produce detailed Advanced SPC Session Output.
+- Distinguish insufficient data from no signals.
+- Present statistical interpretation without QA approval.
 
-Statistical control limits are never recalculated
-or modified by this module.
+This module never recalculates statistical control limits.
 """
 
 from dataclasses import dataclass
@@ -51,9 +50,7 @@ class PlotRules:
     first_observation: int
     result: RulesResult
 
-    # Optional statistical metadata.
-    # All control limits originate from
-    # the original calculation engine.
+    # Original statistical engine control limits.
     center_line: float | None = None
     ucl: float | None = None
     lcl: float | None = None
@@ -82,44 +79,26 @@ def evaluate_control_chart_rules(
     *,
     rule_profile=RULE_PROFILE_STANDARD,
 ):
-    """Evaluate SPC Rules on existing control chart data.
+    """Evaluate SPC Rules using existing chart statistics.
 
-    Parameters
-    ----------
-    kind:
-        "imr", "xbar_r", or "xbar_s".
+    The function preserves the original R3 implementation.
 
-    statistical_result:
-        Immutable result from the corresponding
-        statistical calculation engine.
+    All control limits originate from the corresponding
+    statistical calculation engine.
 
-    enabled_tests:
-        Selected SPC Tests. Test 1 is mandatory.
-
-    rule_profile:
-        Selected rule-profile identifier.
-
-    Returns
-    -------
-    ControlChartRules
-
-    Notes
-    -----
-    Control limits are inherited from the engine.
-    They are never recalculated here.
-
-    For I-MR, the first MR point belongs to
-    original observation number 2.
+    For I-MR:
+        Individuals begin at observation 1.
+        Moving ranges begin at observation 2.
     """
 
     # =====================================
-    # 1. VALIDATE RULE PROFILE
+    # 1. VALIDATE PROFILE
     # =====================================
 
     get_rule_windows(rule_profile)
 
     # =====================================
-    # 2. VALIDATE ENABLED TESTS
+    # 2. VALIDATE SELECTED TESTS
     # =====================================
 
     try:
@@ -230,7 +209,7 @@ def evaluate_control_chart_rules(
         )
 
     # =====================================
-    # 6. EVALUATE BOTH CHART PANELS
+    # 6. EVALUATE BOTH PANELS
     # =====================================
 
     panels = []
@@ -245,10 +224,7 @@ def evaluate_control_chart_rules(
         original_signals,
     ) in specs:
 
-        # =================================
-        # CALL EXISTING SPC RULE ENGINE
-        # =================================
-
+        # Existing SPC rules engine.
         rule_result = evaluate_spc_rules(
             values,
             center_line=center,
@@ -259,14 +235,8 @@ def evaluate_control_chart_rules(
         )
 
         # =================================
-        # 7. VERIFY TEST 1 CONSISTENCY
+        # 7. TEST 1 CONSISTENCY
         # =================================
-
-        # SPC Rules use positions relative
-        # to each plotted series.
-        #
-        # For MR, the first plotted position
-        # corresponds to observation number 2.
 
         detected = tuple(
             index + first - 1
@@ -280,7 +250,7 @@ def evaluate_control_chart_rules(
             )
 
         # =================================
-        # 8. STORE PANEL ASSESSMENT
+        # 8. STORE ORIGINAL RESULTS
         # =================================
 
         panels.append(
@@ -290,16 +260,11 @@ def evaluate_control_chart_rules(
                 first_observation=first,
                 result=rule_result,
 
-                # Original, unrounded limits.
                 center_line=float(center),
                 ucl=float(upper),
                 lcl=float(lower),
             )
         )
-
-    # =====================================
-    # 9. RETURN COMBINED ASSESSMENT
-    # =====================================
 
     return ControlChartRules(
         chart_name=chart_name,
@@ -311,23 +276,193 @@ def evaluate_control_chart_rules(
 
 
 # ======================================================
-# 3. FORMAT ADVANCED SPC RULES REPORT
+# 3. R3.16 - SIGNAL FORMATTING
+# ======================================================
+
+def _format_rule_findings(
+    panel: PlotRules,
+    test: int,
+    required_points: int,
+) -> str:
+    """Format findings for one selected SPC Test.
+
+    Report states:
+    - BELUM CUKUP DATA: The required window cannot complete.
+    - No signals: The test was evaluable but had no findings.
+    - Signal positions: One or more completed rule windows.
+
+    Observation numbers are translated from relative
+    series positions into original worksheet positions.
+    """
+
+    n = panel.result.n_points
+
+    # =====================================
+    # 1. INSUFFICIENT DATA
+    # =====================================
+
+    if n < required_points:
+        return (
+            f"BELUM CUKUP DATA "
+            f"({n}/{required_points} titik)"
+        )
+
+    # =====================================
+    # 2. FINDINGS FOR THIS TEST
+    # =====================================
+
+    findings = [
+        finding
+        for finding in panel.result.findings
+        if finding.test == test
+    ]
+
+    if not findings:
+        return "No signals"
+
+    # =====================================
+    # 3. ORIGINAL OBSERVATION NUMBERS
+    # =====================================
+
+    labels = []
+
+    for finding in findings:
+
+        end = (
+            finding.point
+            + panel.first_observation
+            - 1
+        )
+
+        start = (
+            finding.window_start
+            + panel.first_observation
+            - 1
+        )
+
+        if test == 1:
+            label = f"T1@{end}"
+
+        else:
+            label = (
+                f"T{test}@{end} "
+                f"(window {start}-{end})"
+            )
+
+        labels.append(label)
+
+    return ", ".join(labels)
+
+
+# ======================================================
+# 4. R3.16 - FORMAT PANEL RESULTS
+# ======================================================
+
+def _format_panel_report(
+    panel: PlotRules,
+    enabled_tests,
+    windows,
+) -> list[str]:
+    """Display one panel's fixed limits and SPC Test results."""
+
+    f = format_spc_number
+
+    n = panel.result.n_points
+
+    first = panel.first_observation
+
+    last = (
+        first + n - 1
+    )
+
+    lines = [
+        "",
+        panel.name.upper(),
+        "-" * 56,
+
+        f"Plotted points       : {n}",
+        f"Observation range    : {first}-{last}",
+    ]
+
+    # =====================================
+    # 1. CONTROL LIMITS
+    # =====================================
+
+    if (
+        panel.center_line is not None
+        and panel.ucl is not None
+        and panel.lcl is not None
+    ):
+        lines.extend([
+            "",
+            "CONTROL LIMITS",
+
+            f"UCL                  : {f(panel.ucl)}",
+            f"CL                   : {f(panel.center_line)}",
+            f"LCL                  : {f(panel.lcl)}",
+        ])
+
+    # =====================================
+    # 2. SIGNAL SUMMARY
+    # =====================================
+
+    lines.extend([
+        "",
+        "SPC TEST RESULTS",
+    ])
+
+    for test in enabled_tests:
+
+        status = _format_rule_findings(
+            panel,
+            test,
+            windows[test],
+        )
+
+        lines.append(
+            f"Test {test}: {status}"
+        )
+
+    # =====================================
+    # 3. TOTAL FINDINGS
+    # =====================================
+
+    lines.extend([
+        "",
+        f"Total findings       : "
+        f"{len(panel.result.findings)}",
+    ])
+
+    return lines
+
+
+# ======================================================
+# 5. R3.16 - MAIN SESSION OUTPUT
 # ======================================================
 
 def format_control_chart_rules_report(
     assessment: ControlChartRules,
 ) -> str:
-    """Build Advanced SPC Rules Session Output.
+    """Format detailed Advanced SPC Session Output.
 
-    Uses the shared SPC number formatter.
-
-    Formatting is presentation-only and does not
-    modify the results of the statistical engine
-    or any SPC Rule findings.
+    The report does not change:
+    - SPC calculation results.
+    - Control limits.
+    - Selected rule profile.
+    - Signal locations.
+    - Statistical observations.
     """
 
+    if not isinstance(
+        assessment,
+        ControlChartRules,
+    ):
+        raise TypeError(
+            "Expected ControlChartRules result."
+        )
+
     # =====================================
-    # 1. PROFILE INFORMATION
+    # 1. RULE CONFIGURATION
     # =====================================
 
     profile = assessment.rule_profile
@@ -336,191 +471,195 @@ def format_control_chart_rules_report(
 
     profile_label = RULE_PROFILE_LABELS[profile]
 
-    tests_text = ", ".join(
-        str(number)
-        for number in assessment.enabled_tests
+    active_tests = tuple(
+        assessment.enabled_tests
     )
 
-    # Shared number formatter.
-    f = format_spc_number
+    tests_text = ", ".join(
+        str(test)
+        for test in active_tests
+    )
+
+    upper = assessment.upper
+    lower = assessment.lower
+
+    total_findings = (
+        len(upper.result.findings)
+        + len(lower.result.findings)
+    )
 
     # =====================================
     # 2. REPORT HEADER
     # =====================================
 
     lines = [
-        f"OPTIONAL SPC RULES — {assessment.chart_name}",
-        "=" * 56,
+        f"ADVANCED SPC TESTS — {assessment.chart_name}",
+        "=" * 64,
 
         "",
-
         "SPC RULE CONFIGURATION",
         "-" * 40,
 
-        f"Rule profile       : {profile_label}",
-        f"Active SPC Tests   : {tests_text}",
-
-        "Test 1             : point strictly "
-        "beyond control limits",
-
-        "Test 2             : 9 points "
-        "strictly on the same side of CL",
-
-        f"Test 3             : {windows[3]} points "
-        "strictly increasing/decreasing",
-
-        f"Test 4             : {windows[4]} points "
-        "strictly alternating",
-
-        "Rule limits        : inherited from "
-        "the original Phase I engine",
-
-        "Report precision   : 3 decimals / "
-        "scientific notation for extreme values",
+        f"Rule profile         : {profile_label}",
+        f"Profile ID           : {profile}",
+        f"Active SPC Tests     : {tests_text}",
 
         "",
-
-        "SIGNAL RESULTS",
+        "RULE DEFINITIONS",
         "-" * 40,
+
+        "Test 1               : One point strictly "
+        "outside control limits",
+
+        f"Test 2               : {windows[2]} consecutive "
+        "points on the same side of CL",
+
+        f"Test 3               : {windows[3]} consecutive "
+        "points strictly increasing/decreasing",
+
+        f"Test 4               : {windows[4]} consecutive "
+        "points strictly alternating",
+
+        "",
+        "STATISTICAL METHOD",
+        "-" * 40,
+
+        "Control limits       : Inherited from "
+        "the original Phase I engine",
+
+        "Signal numbering     : Original observation "
+        "or subgroup number",
+
+        "Signal position      : Last point "
+        "of the qualifying window",
+
+        "Numerical formatting : Shared SPC formatter",
+
+        "",
+        "OVERALL SIGNAL SUMMARY",
+        "-" * 40,
+
+        f"Upper panel          : {upper.name}",
+        f"Upper findings       : {len(upper.result.findings)}",
+
+        f"Lower panel          : {lower.name}",
+        f"Lower findings       : {len(lower.result.findings)}",
+
+        f"Total findings       : {total_findings}",
     ]
 
     # =====================================
-    # 3. PER-PANEL RULE REPORTS
+    # 3. UPPER PANEL
     # =====================================
 
-    for panel in (
-        assessment.upper,
-        assessment.lower,
-    ):
-
-        lines.extend([
-            "",
-            panel.name,
-            "-" * 40,
-        ])
-
-        # =================================
-        # 4. DISPLAY CONTROL LIMITS
-        # =================================
-
-        # These limits originate from
-        # the corresponding statistical engine.
-        #
-        # No new limits are calculated.
-
-        if (
-            panel.center_line is not None
-            and panel.ucl is not None
-            and panel.lcl is not None
-        ):
-
-            lines.extend([
-                f"UCL                : {f(panel.ucl)}",
-                f"CL                 : {f(panel.center_line)}",
-                f"LCL                : {f(panel.lcl)}",
-                "",
-            ])
-
-        # =================================
-        # 5. FORMAT ENABLED TEST RESULTS
-        # =================================
-
-        for test in assessment.enabled_tests:
-
-            findings = [
-                finding
-                for finding in panel.result.findings
-                if finding.test == test
-            ]
-
-            if not findings:
-                lines.append(
-                    f"Test {test}: No signals"
-                )
-                continue
-
-            labels = []
-
-            for finding in findings:
-
-                # Relative rule positions are
-                # converted to original numbers.
-
-                end = (
-                    finding.point
-                    + panel.first_observation
-                    - 1
-                )
-
-                start = (
-                    finding.window_start
-                    + panel.first_observation
-                    - 1
-                )
-
-                labels.append(
-                    f"{end} (window {start}-{end})"
-                )
-
-            lines.append(
-                f"Test {test}: "
-                + ", ".join(labels)
-            )
+    lines.extend(
+        _format_panel_report(
+            upper,
+            active_tests,
+            windows,
+        )
+    )
 
     # =====================================
-    # 6. INTERPRETATION NOTES
+    # 4. LOWER PANEL
+    # =====================================
+
+    lines.extend(
+        _format_panel_report(
+            lower,
+            active_tests,
+            windows,
+        )
+    )
+
+    # =====================================
+    # 5. INTERPRETATION
     # =====================================
 
     lines.extend([
         "",
-
         "INTERPRETATION NOTES",
         "-" * 40,
 
-        "- Signal numbers refer to the "
-        "last observation of each qualifying window.",
+        "- Test 1 detects points strictly "
+        "outside the control limits.",
 
-        "- Moving Range signals use the "
-        "original observation numbers.",
+        "- Test 2 requires consecutive points "
+        "strictly on the same side of CL.",
 
-        "- A point equal to the Center Line "
-        "breaks the Test 2 run in this profile.",
+        "- A point exactly on CL interrupts "
+        "the Test 2 run.",
 
-        "- Additional tests may increase "
-        "false-signal frequency.",
+        "- Tests 3 and 4 detect time-ordered "
+        "patterns, not specification failures.",
 
-        "- All statistical control limits "
-        "remain unchanged.",
+        "- BELUM CUKUP DATA means the number "
+        "of plotted points is smaller than "
+        "the required test window.",
 
-        "- Control limits are not "
+        "- No signals means the selected test "
+        "was evaluated without detecting "
+        "a qualifying pattern.",
+
+        "- SPC signal numbers indicate the "
+        "last point of a qualifying window.",
+
+        "- Moving Range signals use original "
+        "observation numbering.",
+
+        "- Additional SPC Tests may increase "
+        "the frequency of false signals.",
+
+        "- Historical Phase I control limits "
+        "should be evaluated for process "
+        "stability before reuse.",
+
+        "- No detected signal does not prove "
+        "that the process is statistically stable.",
+
+        "- Statistical control limits are not "
         "product specification limits.",
 
-        "- Phase I results require "
-        "QC/QA investigation and approval.",
+        "- SPC results describe process behavior "
+        "and do not represent QA approval.",
 
-        "- Adaptive formatting changes "
-        "display only, not calculations.",
+        "- Display formatting does not change "
+        "statistical calculations.",
     ])
 
     # =====================================
-    # 7. EXPERIMENTAL PROFILE WARNING
+    # 6. EXPERIMENTAL PROFILE WARNING
     # =====================================
 
     if profile != RULE_PROFILE_STANDARD:
 
         lines.extend([
             "",
-
             "EXPERIMENTAL RULE PROFILE",
+            "-" * 40,
 
             "The selected 7/15 profile is "
             "experimental and has not been "
-            "certified as equivalent to "
-            "Minitab 18 default behavior.",
+            "verified as equivalent to all "
+            "Minitab configurations.",
         ])
 
     # =====================================
-    # 8. RETURN SESSION OUTPUT
+    # 7. END REPORT
     # =====================================
+
+    lines.extend([
+        "",
+        "STATDESK REPORT INFORMATION",
+        "-" * 40,
+
+        "Analysis             : Advanced SPC Tests 1-4",
+        f"Chart                : {assessment.chart_name}",
+        "Control limits       : Unchanged",
+        "Signal calculation   : Existing SPC rules engine",
+
+        "",
+        "END OF ADVANCED SPC REPORT",
+    ])
 
     return "\n".join(lines)
