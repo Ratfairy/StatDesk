@@ -24,10 +24,11 @@ def prepare_subgroups(
     Default: Xbar-R, 2..8 measurement columns.
     Xbar-S: set min_columns=9, max_columns=25.
 
-    No missing values or silently skipped rows.
+    Minimum subgroup count defaults to 2 for Phase I.
+    Set min_subgroups=1 only for monitoring with historical limits.
+    Statistical estimation still requires 2 or more subgroups.
 
-    min_subgroups defaults to 2 for Phase I analysis.
-    Phase II monitoring can explicitly pass min_subgroups=1.
+    No missing values or silently skipped rows.
     """
 
     # =====================================
@@ -44,11 +45,6 @@ def prepare_subgroups(
             "Batas ukuran subgrup tidak valid."
         )
 
-    if type(min_subgroups) is not int or min_subgroups < 1:
-        raise SubgroupDataError(
-            "Minimum jumlah subgrup harus bilangan bulat positif."
-        )
-
     try:
         indexes = list(selected_indexes)
 
@@ -61,6 +57,11 @@ def prepare_subgroups(
         raise SubgroupDataError(
             f"Pilih {min_columns} sampai {max_columns} "
             "kolom pengukuran untuk satu subgrup."
+        )
+
+    if type(min_subgroups) is not int or min_subgroups < 1:
+        raise SubgroupDataError(
+            "Minimal subgrup harus bilangan bulat >= 1."
         )
 
     # =====================================
@@ -102,12 +103,13 @@ def prepare_subgroups(
 
     if len(rows) < min_subgroups:
         if min_subgroups == 2:
-            raise SubgroupDataError(
-                "Minimal diperlukan dua subgrup lengkap."
+            message = "Minimal diperlukan dua subgrup lengkap."
+        else:
+            message = (
+                f"Minimal diperlukan {min_subgroups} "
+                "subgrup lengkap."
             )
-        raise SubgroupDataError(
-            f"Minimal diperlukan {min_subgroups} subgrup lengkap."
-        )
+        raise SubgroupDataError(message)
 
     # =====================================
     # 4. VALIDATE ALL MEASUREMENTS

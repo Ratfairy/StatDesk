@@ -776,6 +776,7 @@ class MainWindow(QMainWindow):
         chart_name,
         min_columns,
         max_columns,
+        min_subgroups=2,
     ):
         """
         Select rational subgroups from worksheet columns.
@@ -816,6 +817,7 @@ class MainWindow(QMainWindow):
                 indexes,
                 min_columns=min_columns,
                 max_columns=max_columns,
+                min_subgroups=min_subgroups,
             )
 
         except SubgroupDataError as exc:
@@ -1172,6 +1174,9 @@ class MainWindow(QMainWindow):
             chart_name="Xbar-R Historical Parameters / Phase II",
             min_columns=2,
             max_columns=8,
+            # Allow a single monitoring subgroup. Estimate mode still
+            # checks its minimum count in the statistical engine.
+            min_subgroups=1,
         )
 
         if selection is None:
