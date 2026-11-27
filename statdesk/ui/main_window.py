@@ -1,7 +1,35 @@
-
 """StatDesk desktop: worksheet, statistics, graphs and SPC."""
 
 from pathlib import Path
+
+from statdesk.statistics.capability_engine import (
+    CapabilityEngine,
+    CapabilityError,
+    MAX_SUBGROUP_SIZE,
+    format_capability_report,
+)
+from statdesk.statistics.capability_sixpack_report import (
+    format_sixpack_spc_report,
+)
+from statdesk.statistics.anderson_darling_engine import (
+    AndersonDarlingEngine,
+    AndersonDarlingError,
+    format_anderson_darling_report,
+)
+
+from statdesk.ui.capability_dialog import (
+    CapabilityDialog,
+)
+
+from statdesk.visualization.capability_chart import (
+    CapabilityChartError,
+    create_capability_figure,
+)
+
+from statdesk.visualization.capability_sixpack_chart import (
+    CapabilitySixpackError,
+    create_capability_sixpack_figure,
+)
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
@@ -74,7 +102,6 @@ from statdesk.visualization.xbar_s_chart import (
 )
 from statdesk.visualization.spc_rules_overlay import overlay_optional_rules
 
-
 class MainWindow(QMainWindow):
 
     def __init__(self):
@@ -94,6 +121,9 @@ class MainWindow(QMainWindow):
         self.spc_engine = SpcEngine()
         self.xbar_r_engine = XbarREngine()
         self.xbar_s_engine = XbarSEngine()
+
+        # R4.4 — Normal Process Capability
+        self.capability_engine = CapabilityEngine()
 
         self.setWindowTitle("StatDesk - Industrial Statistics")
         self.resize(1200, 750)
@@ -351,6 +381,21 @@ class MainWindow(QMainWindow):
             self.clear_xbar_r_historical_limits,
         )
 
+        quality_menu.addSeparator()
+
+        capability_action = action(
+            quality_menu,
+            "Normal Process Capability Analysis...",
+            self.run_normal_capability,
+        )
+
+        # R4.8.2 — Sixpack uses the same CapabilityDialog and engine.
+        action(
+            quality_menu,
+            "Normal Capability Sixpack...",
+            self.run_capability_sixpack,
+        )
+
         # TOOLBAR
         toolbar = self.addToolBar("Worksheet Tools")
         toolbar.setMovable(False)
@@ -369,6 +414,7 @@ class MainWindow(QMainWindow):
             imr,
             xbar_r,
             xbar_s,
+            capability_action,
         ):
             toolbar.addAction(item)
 
@@ -1410,6 +1456,363 @@ class MainWindow(QMainWindow):
             return None
 
         return index.column()
+
+    # ==================================================
+    # R4.4 — NORMAL PROCESS CAPABILITY ANALYSIS
+    # ==================================================
+
+    def run_normal_capability(self):
+        """Keep R4.7 Normal Capability as the default analysis."""
+        self._run_capability_analysis(sixpack=False)
+
+    def run_capability_sixpack(self):
+        """Open the same dialog and render the R4.8 six-panel report."""
+        self._run_capability_analysis(sixpack=True)
+
+    def _run_capability_analysis(self, *, sixpack):
+        """
+        Normal Process Capability Analysis.
+
+        Flow:
+        1. Select data layout and measurement columns.
+        2. Read worksheet snapshot.
+        3. Validate measurements.
+        4. Calculate capability indices.
+        5. Generate Capability Histogram.
+        6. Display Session Output.
+
+        Statistical calculations belong to CapabilityEngine.
+        Existing SPC engines remain unchanged.
+        """
+
+        # ==========================================
+        # 1. CHECK NUMERIC COLUMNS
+        # ==========================================
+
+        numeric_columns = [
+            column
+            for column in self.model.columns
+            if column.data_type == "numeric"
+        ]
+
+        if not numeric_columns:
+            self.show_error(
+                "Tidak ada kolom Numeric untuk "
+                "Process Capability Analysis.\n\n"
+                "Gunakan Data > Set Column Type "
+                "untuk mengubah tipe kolom."
+            )
+            return
+
+        # ==========================================
+        # 2. OPEN CAPABILITY DIALOG
+        # ==========================================
+
+        try:
+            dialog = CapabilityDialog(
+                self,
+                self.model.columns,
+            )
+
+        except (TypeError, ValueError) as exc:
+            self.show_error(str(exc))
+            return
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            configuration = dialog.configuration()
+
+        except ValueError as exc:
+            self.show_error(str(exc))
+            return
+
+        # ==========================================
+        # 3. READ WORKSHEET SNAPSHOT
+        # ==========================================
+
+        columns, rows = self.model.export_snapshot()
+
+        if not rows:
+            self.show_error(
+                "Worksheet belum memiliki data "
+                "pengukuran untuk dianalisis."
+            )
+            return
+
+        # ==========================================
+        # 4. CALCULATE NORMAL CAPABILITY
+        # ==========================================
+
+        try:
+
+            # --------------------------------------
+            # A. INDIVIDUAL OBSERVATIONS
+            # --------------------------------------
+
+            if configuration.layout == "individuals":
+
+                column_index = (
+                    configuration.selected_indexes[0]
+                )
+
+                values = []
+
+                for row_number, row in enumerate(
+                    rows,
+                    start=1,
+                ):
+
+                    raw_value = row[column_index]
+
+                    if raw_value is None:
+
+                        raise CapabilityError(
+                            f"Baris {row_number}, "
+                            f"kolom "
+                            f"{columns[column_index].name}: "
+                            "pengukuran kosong.\n\n"
+                            "Normal Capability Individuals "
+                            "tidak melewati missing value "
+                            "secara otomatis."
+                        )
+
+                    values.append(raw_value)
+
+                result = (
+                    self.capability_engine.calculate_individuals(
+                        values,
+                        configuration.column_name,
+
+                        lsl=configuration.lsl,
+                        usl=configuration.usl,
+                        target=configuration.target,
+
+                        use_unbiasing_overall=(
+                            configuration.use_unbiasing_overall
+                        ),
+                    )
+                )
+
+            # --------------------------------------
+            # B. RATIONAL SUBGROUPS
+            # --------------------------------------
+
+            elif configuration.layout == "subgroups":
+
+                selected_indexes = (
+                    configuration.selected_indexes
+                )
+
+                # Sixpack SPC engines support subgroup sizes 2–25;
+                # standalone Normal Capability supports up to 200.
+                max_size = (
+                    min(MAX_SUBGROUP_SIZE, 25)
+                    if sixpack
+                    else MAX_SUBGROUP_SIZE
+                )
+
+                subgroups = prepare_subgroups(
+                    columns,
+                    rows,
+                    selected_indexes,
+
+                    min_columns=2,
+                    max_columns=max_size,
+                    min_subgroups=2,
+                )
+
+                result = (
+                    self.capability_engine.calculate_subgroups(
+                        subgroups,
+                        configuration.column_name,
+
+                        lsl=configuration.lsl,
+                        usl=configuration.usl,
+                        target=configuration.target,
+
+                        within_method=(
+                            configuration.within_method
+                        ),
+
+                        use_unbiasing_within=(
+                            configuration.use_unbiasing_within
+                        ),
+
+                        use_unbiasing_overall=(
+                            configuration.use_unbiasing_overall
+                        ),
+                    )
+                )
+
+            # --------------------------------------
+            # C. UNKNOWN DATA LAYOUT
+            # --------------------------------------
+
+            else:
+
+                raise CapabilityError(
+                    "Data layout Process Capability "
+                    "tidak dikenal."
+                )
+
+            # ======================================
+            # 5. GENERATE CAPABILITY FIGURE
+            # ======================================
+
+            if sixpack:
+                # R4.9.3: Calculate AD once and reuse exactly the same
+                # result for the Sixpack Q-Q panel and Session Output.
+                ad_result = AndersonDarlingEngine.calculate_normal(
+                    result.values,
+                    result.column_name,
+                )
+                figure = create_capability_sixpack_figure(
+                    result,
+                    ad_result=ad_result,
+                )
+            else:
+                figure = create_capability_figure(result)
+
+            # ======================================
+            # 6. PREPARE GRAPH DATASET
+            # ======================================
+
+            dataset = ChartDataset(
+                column_name=result.column_name,
+                values=result.values,
+                total_rows=result.n,
+                missing_rows=0,
+            )
+
+            # ======================================
+            # 7. GENERATE SESSION OUTPUT
+            # ======================================
+
+            report = format_capability_report(result)
+
+            if sixpack:
+                # R4.9.5: CapabilityEngine is intentionally analysis-only.
+                # Adjust only the Sixpack report wording, never the estimates
+                # nor the standalone Normal Capability report.
+                default_note = (
+                    "- Capability Normal mengasumsikan distribusi normal; "
+                    "normalitas belum diuji oleh engine ini."
+                )
+                p_text = (
+                    "< 0.001" if ad_result.p_value < 0.001
+                    else f"{ad_result.p_value:.3f}"
+                )
+                if ad_result.reject_normality:
+                    normality_note = (
+                        "- Sixpack Anderson-Darling: asumsi normalitas DITOLAK "
+                        f"(AD={ad_result.ad_statistic:.3f}, "
+                        f"p={p_text}, alpha={ad_result.alpha:.3f}). "
+                        "Estimasi capability berbasis normal perlu ditafsirkan "
+                        "dengan hati-hati."
+                    )
+                else:
+                    normality_note = (
+                        "- Sixpack Anderson-Darling: tidak cukup bukti untuk "
+                        "menolak normalitas "
+                        f"(AD={ad_result.ad_statistic:.3f}, "
+                        f"p={p_text}, alpha={ad_result.alpha:.3f}); "
+                        "ini bukan bukti bahwa distribusi pasti normal."
+                    )
+                report = report.replace(default_note, normality_note)
+
+                spc_report = format_sixpack_spc_report(result)
+                ad_report = format_anderson_darling_report(ad_result)
+                report = (
+                    "NORMAL CAPABILITY SIXPACK — R4.9.5\n"
+                    "Six panels: Phase I SPC, capability histogram, "
+                    "variation chart, normal Q-Q with Anderson-Darling, "
+                    "last 25 subgroups and 6-sigma capability intervals.\n"
+                    "SPC limits use existing R3 Phase I engines.\n"
+                    "Anderson-Darling tests normality of all measurements; "
+                    "it does not establish process stability.\n\n"
+                    + spc_report
+                    + "\n\n"
+                    + ad_report
+                    + "\n\n"
+                    + report
+                )
+
+        except (
+            CapabilityError,
+            CapabilityChartError,
+            CapabilitySixpackError,
+            AndersonDarlingError,
+            SubgroupDataError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+
+            self.show_error(str(exc))
+            return
+
+        # ==========================================
+        # 8. DISPLAY GRAPH
+        # ==========================================
+
+        window = self._show_graph(
+            figure,
+            (
+                "Normal Capability Sixpack"
+                if sixpack
+                else "Normal Process Capability"
+            ),
+            dataset,
+        )
+
+        if sixpack:
+            # Larger default window for six panels, constrained to the
+            # user's available desktop area. Export keeps full resolution.
+            screen = window.screen()
+            if screen is not None:
+                area = screen.availableGeometry()
+                window.resize(
+                    min(1400, area.width()),
+                    min(960, area.height()),
+                )
+            else:
+                window.resize(1300, 850)
+
+        # ==========================================
+        # 9. DISPLAY SESSION OUTPUT
+        # ==========================================
+
+        self.output.append(
+            "\n"
+            + report
+            + "\n"
+        )
+
+        self.has_analysis = True
+
+        # ==========================================
+        # 10. STATUS BAR
+        # ==========================================
+
+        cp_text = (
+            format(result.cp, ".3f")
+            if result.cp is not None
+            else "N/A"
+        )
+
+        self.statusBar().showMessage(
+            (
+                "Normal Capability Sixpack: "
+                if sixpack
+                else "Normal Capability: "
+            )
+            + f"{result.column_name} | "
+            f"N={result.n} | "
+            f"Cp={cp_text} | "
+            f"Cpk={result.cpk:.3f} | "
+            f"Ppk={result.ppk:.3f}"
+        )
 
     # ==================================================
     # 18. ADD ROWS
